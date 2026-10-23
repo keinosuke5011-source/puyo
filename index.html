@@ -1,0 +1,2132 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ぷよぷよ 2P対戦版</title>
+<style>
+  html,body{margin:0;height:100%;background:#080a18;overflow:hidden}
+  body{display:flex;align-items:center;justify-content:center}
+  canvas{display:block;width:min(100vw,calc(100vh * 1000 / 772));aspect-ratio:1000/772;height:auto}
+</style>
+</head>
+<body>
+<canvas id="c" width="1000" height="772"></canvas>
+<script>
+'use strict';
+// =====================================================================
+//  ぷよぷよ風 2P対戦 v3
+//   - 偏りなしのぷよ配列(バッグ方式) / キー設定 / 派手な連鎖演出
+// =====================================================================
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const W = 1000, H = 772;
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+cv.width = W * DPR; cv.height = H * DPR;
+
+const CS = 40, COLS = 6, ROWS = 13;          // 行0は「13段目」(見えない段)、行1〜12が表示段
+const FIELD_W = COLS * CS, FIELD_H = ROWS * CS, FY = 84;
+const FONT = "'Hiragino Kaku Gothic ProN','Yu Gothic','Meiryo',sans-serif";
+const OFFS = [[0, -1], [1, 0], [0, 1], [-1, 0]];   // 子ぷよの向き: 上,右,下,左
+const OJAMA = 6;
+
+// 本家のスコア表
+const CHAIN_POWER = [0, 8, 16, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480, 512, 544, 576, 608, 640, 672];
+const CONNECT = [0, 0, 0, 0, 0, 2, 3, 4, 5, 6, 7, 10];
+const COLOR_BONUS = [0, 3, 6, 12, 24];
+const OJAMA_RATE = 70;
+
+// 操作系パラメータ
+const DAS = 11, ARR = 3, SOFT = 0.5, LOCK = 30, GROUND_MAX = 100;
+const ERASE_BASE = 26, ERASE_T = 44;      // 消去演出: 点滅→ふくらむ→順番にはじける
+
+const PAL = {
+  1: { m: '#ff4a55', l: '#ffa0a6', d: '#b3162a' },
+  2: { m: '#3fd45f', l: '#a6f2b4', d: '#13852e' },
+  3: { m: '#4a7dff', l: '#a9c3ff', d: '#1a3fb0' },
+  4: { m: '#ffd531', l: '#fff3a0', d: '#b88f00' },
+  5: { m: '#b65cff', l: '#e2b9ff', d: '#6d22b0' },
+  6: { m: '#c9ccd8', l: '#f4f5fa', d: '#7b7f92' },
+};
+
+// ---- 画像 (img フォルダ。無ければ自動で描画に切り替え) ----
+// 1=赤 2=緑 3=青 4=黄 5=紫 / おじゃま(6)は描画
+const SPRITE_FILES = { 1: 'img/puyo_1.png', 2: 'img/puyo_2.png', 3: 'img/puyo_3.png', 4: 'img/puyo_4.png', 5: 'img/puyo_5.png', 6: 'img/ojamapuyo_1.png' };   // 6=おじゃま(大ぷよ)
+const sprites = {};
+for (const k in SPRITE_FILES) { const im = new Image(); im.src = SPRITE_FILES[k]; sprites[k] = im; }
+const batankyuImg = new Image(); batankyuImg.src = 'img/batankyu.png';
+const hasSprite = c => { const im = sprites[c]; return !!(im && im.complete && im.naturalWidth > 0); };
+const hasBatan = () => batankyuImg.complete && batankyuImg.naturalWidth > 0;
+// 予告おじゃまアイコン: 大ぷよ(6) / 岩(30) / 星(180) / 月(360) / 王冠(720)
+const OJ_FILES = { 6: 'img/ojamapuyo_1.png', 30: 'img/ojamapuyo_2.png', 180: 'img/ojamapuyo_3.png', 360: 'img/ojamapuyo_4.png', 720: 'img/ojamapuyo_5.png' };
+const ojImgs = {};
+for (const k in OJ_FILES) { const im = new Image(); im.src = OJ_FILES[k]; ojImgs[k] = im; }
+const hasOj = k => { const im = ojImgs[k]; return !!(im && im.complete && im.naturalWidth > 0); };
+
+// ---- 設定（このブラウザに自動保存）----
+const SETTINGS_KEY = 'puyo_settings_v1';
+const MODES = ['vs', 'cpu', 'tower', 'train', 'solo'];
+const MODE_NAMES = { vs: 'ふたりで対戦', cpu: 'CPUと対戦', tower: 'タワー (20階)', train: '技術特訓 (レッスン)', solo: 'ひとりで練習 (スコアアタック)' };
+const settings = {
+  mode: 'vs', cpuLevel: 2, colors: 4, speed: 1, guide: true, sound: true,
+  voice: true, vol: 7, ojScale: 1, rotAnim: 2, fx: 1, shake: true, rumble: true, das: 1, soft: 1,
+  towerFloor: 1, lesson: 0, hint: true,
+};
+function loadSettings() {
+  try {
+    const o = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    for (const k in settings) if (k in o && typeof o[k] === typeof settings[k]) settings[k] = o[k];
+  } catch (e) { /* 読めなければ初期値 */ }
+  if (!MODES.includes(settings.mode)) settings.mode = 'vs';
+  const cl = (k, a, b) => { settings[k] = Math.max(a, Math.min(b, Math.round(settings[k] * 100) / 100)); };
+  cl('cpuLevel', 1, 5); cl('colors', 3, 5); cl('speed', 0, 2); cl('vol', 0, 10); cl('ojScale', 0.5, 1.5);
+  cl('rotAnim', 0, 2); cl('fx', 0, 2); cl('das', 0, 2); cl('soft', 0, 2); cl('towerFloor', 1, 20); cl('lesson', 0, 7);
+}
+function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { /* 保存不可 */ } }
+loadSettings();
+const FXK = () => [0.35, 1, 1.6][settings.fx];                 // 演出の量
+const DAS_T = [[14, 4], [11, 3], [8, 2]];                       // 横移動の速さ [DAS, ARR]
+const SOFT_T = [0.32, 0.5, 0.8];                                // 高速落下の速さ
+
+// ---------------------------------------------------------------------
+//  サウンド (WebAudio・外部ファイルなし)
+// ---------------------------------------------------------------------
+let actx = null, master = null;
+function applyVol() { if (master) master.gain.value = settings.vol / 7; }
+function ensureAudio() {
+  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { actx = null; } }
+  if (actx && !master) { master = actx.createGain(); master.connect(actx.destination); }
+  applyVol();
+  if (actx && actx.state === 'suspended') actx.resume();
+}
+function tone(freq, dur = 0.08, type = 'sine', vol = 0.08, slide = 0, delay = 0) {
+  if (!settings.sound || !actx) return;
+  const t = actx.currentTime + delay;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (slide) o.frequency.linearRampToValueAtTime(Math.max(20, freq + slide), t + dur);
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(master || actx.destination);
+  o.start(t); o.stop(t + dur + 0.03);
+}
+function noise(dur = 0.3, vol = 0.05, f0 = 600, f1 = 3000, delay = 0) {
+  if (!settings.sound || !actx) return;
+  const t = actx.currentTime + delay, len = Math.max(1, Math.floor(actx.sampleRate * dur));
+  const buf = actx.createBuffer(1, len, actx.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  const src = actx.createBufferSource(); src.buffer = buf;
+  const f = actx.createBiquadFilter(); f.type = 'bandpass';
+  f.frequency.setValueAtTime(f0, t); f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  const g = actx.createGain(); g.gain.value = vol;
+  src.connect(f); f.connect(g); g.connect(master || actx.destination); src.start(t);
+}
+const SCALE = [523, 587, 659, 784, 880, 1047, 1175, 1319, 1568, 1760, 2093];
+const sfx = {
+  // --- プレイ中 ---
+  move() { tone(420, 0.025, 'triangle', 0.02); },
+  rotate() { tone(620, 0.035, 'square', 0.022); tone(930, 0.035, 'square', 0.015, 0, 0.03); },
+  lock() { tone(260, 0.1, 'sine', 0.1, -140); noise(0.05, 0.03, 1200, 400); },        // ポンッ
+  spawn() { tone(700, 0.04, 'sine', 0.012, 200); },
+  erase(n) {                                                                           // ぼよん＋連鎖ごとに音程が上がる
+    const f = SCALE[Math.min(n - 1, SCALE.length - 1)];
+    tone(f * 0.5, 0.14, 'sine', 0.12, f * 0.4);
+    tone(f, 0.28, 'triangle', 0.1); tone(f * 1.5, 0.22, 'sine', 0.05, 0, 0.02);
+    if (n >= 3) tone(f * 2, 0.18, 'square', 0.03, 0, 0.06);
+    if (n >= 4) tone(f / 2, 0.4, 'sawtooth', 0.04);
+    if (n >= 7) { noise(0.5, 0.05, 400, 4000); tone(f * 3, 0.3, 'triangle', 0.05, 200, 0.08); }
+  },
+  pop() { const f = 500 + Math.random() * 500; tone(f, 0.07, 'sine', 0.035, f * 0.9); },   // ぷよがはじける ぽこっ
+  // --- 攻撃・おじゃま ---
+  cutin(tier) { noise(0.35, 0.06, 300, 3500); [0, 4, 7, 12].forEach((s, i) => tone(330 * Math.pow(2, s / 12), 0.25 + tier * 0.05, 'sawtooth', 0.03, 0, i * 0.04)); },
+  shot() { noise(0.4, 0.035, 500, 2600); tone(300, 0.35, 'sine', 0.05, 900); },          // ヒュルルル
+  hit() { tone(95, 0.3, 'sawtooth', 0.1, -40); noise(0.2, 0.05, 1500, 300); tone(988, 0.06, 'square', 0.03, 0, 0.05); tone(1319, 0.08, 'square', 0.03, 0, 0.1); },
+  ojama() { tone(120, 0.18, 'sawtooth', 0.05, -40); noise(0.3, 0.03, 2500, 500); },       // ひゅー(降り始め)
+  land() { tone(110, 0.25, 'sine', 0.18, -60); noise(0.18, 0.07, 900, 200); tone(70, 0.3, 'triangle', 0.1, -20, 0.03); },   // ドスン
+  offset() { [1319, 1568, 2093, 2637].forEach((f, i) => tone(f, 0.12, 'triangle', 0.06, 0, i * 0.05)); },                  // キラーン(相殺)
+  warn() { tone(880, 0.08, 'square', 0.03); tone(660, 0.08, 'square', 0.03, 0, 0.1); },    // ピピッ(あぶない)
+  // --- 演出 ---
+  zenkeshi() { [523, 659, 784, 1047, 1319, 1568, 2093].forEach((f, i) => { tone(f, 0.24, 'triangle', 0.1, 0, i * 0.07); tone(f / 2, 0.24, 'sawtooth', 0.03, 0, i * 0.07); }); noise(0.6, 0.04, 800, 5000); },
+  win() {
+    [523, 659, 784, 1047, 784, 1047, 1319].forEach((f, i) => { tone(f, 0.28, 'triangle', 0.1, 0, i * 0.11); tone(f * 0.5, 0.28, 'square', 0.025, 0, i * 0.11); });
+    [1047, 1319, 1568].forEach(f => tone(f, 0.9, 'triangle', 0.06, 0, 0.8));
+  },
+  lose() { [392, 330, 262].forEach((f, i) => tone(f, 0.38, 'sawtooth', 0.06, -90, i * 0.3)); tone(196, 0.9, 'sawtooth', 0.06, -70, 0.9); },   // ガーン…
+  // --- メニュー・カウントダウン ---
+  cursor() { tone(880, 0.04, 'square', 0.03); },
+  select() { [660, 880, 1320].forEach((f, i) => tone(f, 0.09, 'square', 0.04, 0, i * 0.06)); },
+  back() { tone(440, 0.07, 'square', 0.03); tone(330, 0.08, 'square', 0.03, 0, 0.06); },
+  count() { tone(660, 0.12, 'square', 0.05); },
+  ready() { tone(660, 0.12, 'square', 0.05); },
+  go() { tone(1320, 0.4, 'square', 0.05); tone(1980, 0.35, 'triangle', 0.04, 0, 0.05); },
+  clear() { [784, 988, 1175, 1568].forEach((f, i) => { tone(f, 0.2, 'triangle', 0.08, 0, i * 0.08); tone(f / 2, 0.2, 'square', 0.02, 0, i * 0.08); }); },
+};
+// ---------------------------------------------------------------------
+//  ボイス
+//   voice/ フォルダに chain_2.mp3 …(任意)があればそれを再生。無ければブラウザの音声合成(日本語)で読み上げ。
+//   使えるファイル名: chain_2〜chain_19 / zenkeshi / sousai / win / lose / ready / go / ugh / clear / fail
+// ---------------------------------------------------------------------
+let voiceFiles = null;                                           // null=確認中 true=voice/ あり false=なし
+(function voiceProbe() {
+  try {
+    const a = new Audio(); a.preload = 'auto';
+    a.addEventListener('canplaythrough', () => { voiceFiles = true; }, { once: true });
+    a.addEventListener('error', () => { voiceFiles = false; }, { once: true });
+    a.src = 'voice/chain_2.mp3';
+  } catch (e) { voiceFiles = false; }
+})();
+let jaVoice = null;
+function pickVoice() { try { jaVoice = speechSynthesis.getVoices().find(v => /^ja/i.test(v.lang)) || null; } catch (e) { jaVoice = null; } }
+try { if (window.speechSynthesis) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; } } catch (e) { /* 非対応 */ }
+function speakTTS(txt, pitch, rate, vol) {
+  try {
+    const ss = window.speechSynthesis; if (!ss || typeof SpeechSynthesisUtterance === 'undefined') return;
+    const u = new SpeechSynthesisUtterance(txt);
+    u.lang = 'ja-JP'; if (jaVoice) u.voice = jaVoice;
+    u.pitch = Math.max(0, Math.min(2, pitch)); u.rate = Math.max(0.5, Math.min(2, rate)); u.volume = Math.max(0, Math.min(1, vol * settings.vol / 7));
+    ss.cancel(); ss.speak(u);
+  } catch (e) { /* 再生できなくても進行に影響なし */ }
+}
+function speak(key, txt, pitch = 1, rate = 1.1, vol = 1) {
+  if (!settings.voice || !settings.sound || settings.vol <= 0) return;
+  if (key && voiceFiles) {
+    try {
+      const a = new Audio('voice/' + key + '.mp3'); a.volume = Math.max(0, Math.min(1, vol * settings.vol / 7));
+      a.addEventListener('error', () => speakTTS(txt, pitch, rate, vol), { once: true });
+      const pr = a.play(); if (pr && pr.catch) pr.catch(() => {});
+      return;
+    } catch (e) { /* 合成音声へ */ }
+  }
+  speakTTS(txt, pitch, rate, vol);
+}
+const KANA_N = ['', 'いち', 'に', 'さん', 'よん', 'ご', 'ろく', 'なな', 'はち', 'きゅう', 'じゅう'];
+function voicePitch(p) { return !p ? 1.1 : p.cpu ? 0.7 : p.idx === 0 ? 1.35 : 0.95; }
+function voiceSay(p, key, txt, rate = 1.1) { speak(key, txt, voicePitch(p), rate); }
+function voiceChain(p, n) {
+  if (n < 2) return;
+  const base = (n <= 10 ? KANA_N[n] : String(n)) + 'れんさ！';
+  const tail = n >= 10 ? 'ちょうすごーい！' : n >= 7 ? 'すごーい！' : n >= 4 ? 'ナイス！' : '';
+  speak('chain_' + Math.min(n, 19), base + tail, voicePitch(p) + Math.min(0.3, n * 0.03), 1.05 + Math.min(0.45, n * 0.04));
+}
+
+
+// ---------------------------------------------------------------------
+//  ぷよ配列: 偏りなし（バッグ方式）
+//   色ごとに同じ数ずつ入れた袋をシャッフルして順に配る。
+//   どの色も一定の間隔で必ず出る / 同じ色ばかり続くことがない。2人とも同じ順番。
+// ---------------------------------------------------------------------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+class Sequence {
+  constructor(n) {
+    this.rnd = mulberry32((Math.random() * 4294967296) >>> 0);
+    this.pal = []; for (let i = 1; i <= n; i++) this.pal.push(i);
+    const early = this.shuffle(this.pal.slice()).slice(0, Math.min(3, n));
+    // 最初の3組(6個)は3色だけ。各色ちょうど2個ずつ
+    this.buf = this.shuffle([...early, ...early]);
+    this.list = [];
+  }
+  shuffle(a) {
+    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(this.rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  }
+  refill() {
+    const bag = []; for (const c of this.pal) for (let k = 0; k < 8; k++) bag.push(c);   // 各色8個ずつ
+    this.buf = this.shuffle(bag);
+  }
+  get(i) {
+    while (this.list.length <= i) {
+      if (this.buf.length < 2) this.refill();
+      this.list.push([this.buf.pop(), this.buf.pop()]);
+    }
+    return this.list[i];
+  }
+}
+
+// ---------------------------------------------------------------------
+//  キー設定（1P/2P それぞれ自由に割り当て可能・自動保存）
+// ---------------------------------------------------------------------
+const ACTS = ['left', 'right', 'down', 'cw', 'ccw'];
+const ACT_LABEL = { left: '左へ移動', right: '右へ移動', down: '高速落下', cw: '右回転', ccw: '左回転' };
+const DEFAULT_BINDS = [
+  { left: ['ArrowLeft'], right: ['ArrowRight'], down: ['ArrowDown'], cw: ['ArrowUp', 'KeyX'], ccw: ['KeyZ'] },
+  { left: ['KeyA'], right: ['KeyD'], down: ['KeyS'], cw: ['KeyW', 'KeyE'], ccw: ['KeyQ'] },
+];
+const cloneBinds = b => JSON.parse(JSON.stringify(b));
+const BIND_KEY = 'puyo_binds_v3';
+function loadBinds() {
+  try {
+    const j = JSON.parse(localStorage.getItem(BIND_KEY));
+    if (Array.isArray(j) && j.length === 2 && j.every(b => ACTS.every(a => Array.isArray(b[a]) && b[a].length && b[a].every(c => typeof c === 'string')))) return j;
+  } catch (e) { /* 保存なし */ }
+  return cloneBinds(DEFAULT_BINDS);
+}
+function saveBinds() { try { localStorage.setItem(BIND_KEY, JSON.stringify(binds)); } catch (e) { /* 保存不可 */ } }
+let binds = loadBinds();
+let KEYMAP = {};
+function rebuildKeymap() {
+  KEYMAP = {};
+  binds.forEach((b, pi) => { for (const a of ACTS) for (const c of b[a]) KEYMAP[c] = [pi, a]; });
+}
+rebuildKeymap();
+const RESERVED = ['Escape', 'KeyP', 'KeyM', 'KeyH', 'KeyV', 'Enter', 'Space', 'Backspace', 'Tab'];
+const KEYNAMES = { ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓', Comma: ',', Period: '.', Slash: '/', Semicolon: ';', Quote: "'", BracketLeft: '[', BracketRight: ']', Backslash: '\\', Minus: '-', Equal: '=', Backquote: '`', ShiftLeft: '左Shift', ShiftRight: '右Shift', ControlLeft: '左Ctrl', ControlRight: '右Ctrl', AltLeft: '左Alt', AltRight: '右Alt', IntlYen: '¥', IntlRo: '＼' };
+function keyName(c) {
+  if (KEYNAMES[c]) return KEYNAMES[c];
+  if (/^Key[A-Z]$/.test(c)) return c.slice(3);
+  if (/^Digit\d$/.test(c)) return c.slice(5);
+  if (/^Numpad/.test(c)) return 'テンキー' + c.slice(6);
+  return c;
+}
+const bindStr = (pi, a) => binds[pi][a].map(keyName).join('・');
+function bindText(pi) {
+  return `${bindStr(pi, 'left')} ${bindStr(pi, 'right')} 移動 / ${bindStr(pi, 'down')} 高速落下 / ${bindStr(pi, 'cw')} 右回転 / ${bindStr(pi, 'ccw')} 左回転`;
+}
+const KEY_ROWS = []; for (let pi = 0; pi < 2; pi++) for (const a of ACTS) KEY_ROWS.push([pi, a]);   // 10行
+const KEY_N = KEY_ROWS.length + 3;     // + 入れ替え / 初期化 / 戻る
+
+// ---------------------------------------------------------------------
+//  入力
+// ---------------------------------------------------------------------
+const mk = () => ({ left: false, right: false, down: false });
+const kb = [mk(), mk()], padS = [mk(), mk()], held = [mk(), mk()];
+const padPrev = [{}, {}];
+let padInfo = [];                       // 接続中コントローラー名
+let padObjs = [null, null];
+const padToast = { text: '', until: 0 };
+
+const game = {
+  scene: 'menu', players: [], over: false, paused: false, countdown: 0, frame: 0, wins: [0, 0], sel: 0,
+  keySel: 0, bindWait: false, shots: [], sparks: [], flash: 0, shake: 0, overT: 0, shock: [], optSel: 0, demo: null, floor: 1, lessonIdx: 0, towerInfo: null, lesson: null,
+  bubbles: Array.from({ length: 36 }, (_, i) => ({ x: (i * 97) % W, y: (i * 211) % H, r: 3 + (i % 5) * 2, s: 0.2 + (i % 7) * 0.08, ph: i })),
+};
+function toast(msg) { padToast.text = msg; padToast.until = game.frame + 240; }
+
+function rotate(i, d) {
+  const pl = game.players[settings.mode === 'vs' ? i : 0];
+  if (pl && pl.state === 'control' && pl.rotQ.length < 2) pl.rotQ.push(d);
+}
+const PREVENT = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space', 'Backspace', 'Tab'];
+window.addEventListener('keydown', e => {
+  if (PREVENT.includes(e.code) || KEYMAP[e.code]) e.preventDefault();
+  ensureAudio();
+  if (game.scene === 'keys') { keysKey(e); return; }
+  if (game.scene === 'opts') { optsKey(e); return; }
+  if (e.code === 'KeyM') { if (!e.repeat) { settings.sound = !settings.sound; saveSettings(); } return; }
+  if (e.code === 'KeyV') { if (!e.repeat) { settings.voice = !settings.voice; saveSettings(); toast('ボイス ' + (settings.voice ? 'ON' : 'OFF')); if (settings.voice) speak(null, 'ボイス、オン！', 1.2, 1.1); } return; }
+  if (game.scene === 'menu') { menuKey(e); return; }
+  if (e.code === 'KeyH') { if (!e.repeat) { settings.hint = !settings.hint; saveSettings(); toast('ヒント ' + (settings.hint ? 'ON' : 'OFF')); } return; }
+  if (e.code === 'KeyP' || e.code === 'Escape') { if (!e.repeat && !game.over) game.paused = !game.paused; return; }
+  if (game.paused) { if (e.code === 'Backspace') toMenu(); return; }
+  if (game.over) {
+    if (e.repeat) return;
+    if (e.code === 'Enter' || e.code === 'Space') continueAfterOver();
+    if (e.code === 'Backspace') toMenu();
+    return;
+  }
+  const m = KEYMAP[e.code]; if (!m) return;
+  const pi = settings.mode === 'vs' ? m[0] : 0, act = m[1];
+  if (act === 'cw' || act === 'ccw') { if (!e.repeat) rotate(pi, act === 'cw' ? 1 : -1); }
+  else kb[pi][act] = true;
+});
+window.addEventListener('keyup', e => {
+  const m = KEYMAP[e.code]; if (!m) return;
+  const pi = settings.mode === 'vs' ? m[0] : 0, act = m[1];
+  if (act === 'left' || act === 'right' || act === 'down') kb[pi][act] = false;
+});
+window.addEventListener('blur', () => { kb.forEach(k => { k.left = k.right = k.down = false; }); if (game.scene === 'play' && !game.over) game.paused = true; });
+document.addEventListener('visibilitychange', () => { if (document.hidden && game.scene === 'play' && !game.over) game.paused = true; });
+
+const MENU_N = 7;                       // モード/詳細/色数/スピード/オプション/キー設定/スタート
+function towerMaxSel() { return Math.min(TOWER_MAX, towerBest + 1); }
+function menuKey(e) {
+  if (e.code === 'ArrowUp') { game.sel = (game.sel + MENU_N - 1) % MENU_N; sfx.cursor(); }
+  else if (e.code === 'ArrowDown') { game.sel = (game.sel + 1) % MENU_N; sfx.cursor(); }
+  else if (e.code === 'ArrowLeft') menuChange(-1);
+  else if (e.code === 'ArrowRight') menuChange(1);
+  else if ((e.code === 'Enter' || e.code === 'Space') && !e.repeat) {
+    sfx.select();
+    if (game.sel === 4) openOpts(); else if (game.sel === 5) openKeys(); else startGame(true);
+  }
+}
+function menuChange(d) {
+  const m = settings.mode;
+  switch (game.sel) {
+    case 0: settings.mode = MODES[(MODES.indexOf(m) + d + MODES.length) % MODES.length]; break;
+    case 1:
+      if (m === 'cpu') settings.cpuLevel = 1 + ((settings.cpuLevel - 1 + d + 5) % 5);
+      else if (m === 'tower') { const mx = towerMaxSel(); settings.towerFloor = 1 + ((Math.min(settings.towerFloor, mx) - 1 + d + mx) % mx); }
+      else if (m === 'train') settings.lesson = (settings.lesson + d + LESSONS.length) % LESSONS.length;
+      else return;
+      break;
+    case 2: settings.colors = 3 + ((settings.colors - 3 + d + 3) % 3); break;
+    case 3: settings.speed = (settings.speed + d + 3) % 3; break;
+    default: return;
+  }
+  sfx.cursor(); saveSettings();
+}
+// ---- オプション画面 ----
+const OPT_N = 12;
+const OPT_DESC = [
+  '回すときの動き。バネ=ぷよぷよ風にぷるんと弾む / なめらか=すっと回る / なし=一瞬で切り替わる',
+  '連鎖アニメ・火花・フラッシュの量。重いと感じたら「控えめ」へ',
+  '連鎖のときの画面のゆれ。酔いやすい人はOFFがおすすめ',
+  '対応コントローラーの振動（ブラウザが対応している場合のみ）',
+  '←→を押し続けたときの横移動の速さ',
+  '↓を押したときの落下の速さ',
+  'ぷよが落ちる場所に点線の丸を表示する',
+  '効果音のON/OFF  (Mキーでも切り替え)',
+  '全体の音量  (←で小さく・→で大きく)',
+  '連鎖や全消しの掛け声（ブラウザの音声合成。voice/フォルダに mp3 を置けばそちらを再生） Vキーでも切替',
+  '盤面に降るおじゃまぷよの大きさ。ふつうは自動でまわりと同じ大きさにそろえます。ずれて見えるときだけ調整',
+  'メニューへもどる (Esc)',
+];
+function openOpts() { game.scene = 'opts'; game.optSel = 0; game.demo = { x: 0, vx: 0, rot: 0, ang: 0, angV: 0, c1: 1, c2: 3, pulse: 0, trail: [], visY: 0, t: 0 }; }
+function closeOpts() { game.scene = 'menu'; saveSettings(); }
+function optsKey(e) {
+  if (e.code === 'ArrowUp') { game.optSel = (game.optSel + OPT_N - 1) % OPT_N; sfx.cursor(); }
+  else if (e.code === 'ArrowDown') { game.optSel = (game.optSel + 1) % OPT_N; sfx.cursor(); }
+  else if (e.code === 'ArrowLeft') optsChange(-1);
+  else if (e.code === 'ArrowRight') optsChange(1);
+  else if ((e.code === 'Enter' || e.code === 'Space') && !e.repeat) { if (game.optSel === OPT_N - 1) { sfx.back(); closeOpts(); } else optsChange(1); }
+  else if ((e.code === 'Escape' || e.code === 'Backspace') && !e.repeat) { sfx.back(); closeOpts(); }
+}
+function optsChange(d) {
+  switch (game.optSel) {
+    case 0: settings.rotAnim = (settings.rotAnim + d + 3) % 3; break;
+    case 1: settings.fx = (settings.fx + d + 3) % 3; break;
+    case 2: settings.shake = !settings.shake; break;
+    case 3: settings.rumble = !settings.rumble; if (settings.rumble) rumble(0, 0.7, 250); break;
+    case 4: settings.das = (settings.das + d + 3) % 3; break;
+    case 5: settings.soft = (settings.soft + d + 3) % 3; break;
+    case 6: settings.guide = !settings.guide; break;
+    case 7: settings.sound = !settings.sound; break;
+    case 8: settings.vol = Math.max(0, Math.min(10, settings.vol + d)); applyVol(); break;
+    case 9: settings.voice = !settings.voice; if (settings.voice) speak(null, 'ボイス、オン！', 1.2, 1.1); break;
+    case 10: settings.ojScale = Math.max(0.5, Math.min(1.5, Math.round((settings.ojScale + d * 0.05) * 100) / 100)); break;
+    default: return;
+  }
+  sfx.cursor(); saveSettings();
+}
+function openKeys() { game.scene = 'keys'; game.keySel = 0; game.bindWait = false; }
+function closeKeys() { game.scene = 'menu'; game.bindWait = false; kb.forEach(k => { k.left = k.right = k.down = false; }); }
+function keysKey(e) {
+  if (game.bindWait) {                                   // 割り当て待ち
+    if (e.repeat) return;
+    if (e.code === 'Escape') { game.bindWait = false; return; }
+    if (RESERVED.includes(e.code)) { toast('このキーは割り当てできません'); return; }
+    const [pi, act] = KEY_ROWS[game.keySel], old = binds[pi][act].slice();
+    for (let p = 0; p < 2; p++) for (const a of ACTS) {
+      if ((p === pi && a === act)) continue;
+      if (binds[p][a].includes(e.code)) { binds[p][a] = binds[p][a].filter(c => c !== e.code); if (!binds[p][a].length) binds[p][a] = old.slice(0, 1); }   // 取り合いになったら入れ替え
+    }
+    binds[pi][act] = [e.code];
+    rebuildKeymap(); saveBinds(); game.bindWait = false;
+    toast(`${pi + 1}P ${ACT_LABEL[act]} = ${keyName(e.code)}`);
+    return;
+  }
+  if (e.code === 'Escape' || e.code === 'Backspace') { closeKeys(); return; }
+  if (e.code === 'ArrowUp') game.keySel = (game.keySel + KEY_N - 1) % KEY_N;
+  else if (e.code === 'ArrowDown') game.keySel = (game.keySel + 1) % KEY_N;
+  else if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight') && game.keySel < KEY_ROWS.length) game.keySel = (game.keySel + 5) % 10;
+  else if ((e.code === 'Enter' || e.code === 'Space') && !e.repeat) {
+    if (game.keySel < KEY_ROWS.length) game.bindWait = true;
+    else if (game.keySel === 10) { binds = [binds[1], binds[0]]; rebuildKeymap(); saveBinds(); toast('1Pと2Pのキーを入れ替えました'); }
+    else if (game.keySel === 11) { binds = cloneBinds(DEFAULT_BINDS); rebuildKeymap(); saveBinds(); toast('初期設定に戻しました'); }
+    else closeKeys();
+  }
+}
+
+// ---- ゲームパッド（Switch Proコン / PS4・PS5 / Xbox 等。有線・無線どちらでもOK）----
+function padShortName(id) {
+  let n = String(id || 'Controller');
+  if (n.includes('(')) n = n.split('(')[0];
+  n = n.replace(/^[0-9a-f]{4}-[0-9a-f]{4}-/i, '').trim();
+  return n || 'Controller';
+}
+function readPad(gp) {
+  const id = String(gp.id || '').toLowerCase();
+  const std = gp.mapping === 'standard';
+  const nin = id.includes('057e') || id.includes('pro controller') || id.includes('switch');
+  const ps = id.includes('054c') || id.includes('dualshock') || id.includes('dualsense') || id.includes('wireless controller');
+  const b = n => !!(gp.buttons[n] && gp.buttons[n].pressed);
+  const ax = n => gp.axes[n] || 0;
+  let left = ax(0) < -0.5, right = ax(0) > 0.5, up = ax(1) < -0.5, down = ax(1) > 0.5;
+  let dl = false, dr = false, du = false, dd = false;
+  if (std || gp.buttons.length >= 16) { du = b(12); dd = b(13); dl = b(14); dr = b(15); }
+  if (!dl && !dr && !du && !dd && gp.axes.length > 9) {
+    const h = ax(9);
+    if (Math.abs(h) <= 1.05) {
+      const k = Math.round((h + 1) * 3.5);            // 0:上 1:右上 2:右 3:右下 4:下 5:左下 6:左 7:左上
+      du = k === 0 || k === 1 || k === 7; dr = k >= 1 && k <= 3; dd = k >= 3 && k <= 5; dl = k >= 5 && k <= 7;
+    }
+  }
+  let cwB = [1, 3], ccwB = [0, 2];
+  if (!std) { if (nin) { cwB = [1, 2]; ccwB = [0, 3]; } else if (ps) { cwB = [2, 3]; ccwB = [1, 0]; } }
+  const face = cwB.some(b), faceCcw = ccwB.some(b);
+  return {
+    left: left || dl, right: right || dr, up: up || du, down: down || dd,
+    cw: face || b(5) || du, ccw: faceCcw || b(4),
+    confirm: b(cwB[0]), start: b(9) || b(16), select: b(8),
+  };
+}
+window.addEventListener('gamepadconnected', e => toast('コントローラー接続: ' + padShortName(e.gamepad.id)));
+window.addEventListener('gamepaddisconnected', e => {
+  toast('コントローラー切断: ' + padShortName(e.gamepad.id));
+  if (game.scene === 'play' && !game.over) game.paused = true;
+});
+function rumble(idx, mag, dur) {                 // コントローラーを振動させる（対応機種のみ）
+  if (!settings.rumble) return;
+  const arr = settings.mode === 'vs' ? [padObjs[idx]] : (idx === 1 ? [] : padObjs);
+  for (const gp of arr) {
+    try {
+      const va = gp && gp.vibrationActuator;
+      if (va && va.playEffect) va.playEffect('dual-rumble', { startDelay: 0, duration: dur, weakMagnitude: Math.min(1, mag * 0.7), strongMagnitude: Math.min(1, mag) });
+    } catch (e) { /* 非対応 */ }
+  }
+}
+function pollPads() {
+  const raw = navigator.getGamepads ? navigator.getGamepads() : [];
+  const pads = [];
+  for (const g of (raw || [])) if (g && g.connected !== false) pads.push(g);
+  padInfo = pads.map(g => padShortName(g.id));
+  padObjs = [pads[0] || null, pads[1] || null];
+  for (let i = 0; i < 2; i++) { padS[i].left = padS[i].right = padS[i].down = false; }
+  pads.slice(0, 2).forEach((gp, i) => {
+    const r = readPad(gp), pv = padPrev[i];
+    const tgt = settings.mode === 'vs' ? i : 0;
+    const s = padS[tgt];
+    s.left = s.left || r.left; s.right = s.right || r.right; s.down = s.down || r.down;
+    const edge = k => r[k] && !pv[k];
+    if (r.start || r.cw || r.ccw || r.confirm) ensureAudio();
+    if (game.scene === 'menu') {
+      if (edge('up')) menuKey({ code: 'ArrowUp' });
+      if (edge('down')) menuKey({ code: 'ArrowDown' });
+      if (edge('left')) menuKey({ code: 'ArrowLeft' });
+      if (edge('right')) menuKey({ code: 'ArrowRight' });
+      if (edge('start') || edge('confirm')) menuKey({ code: 'Enter', repeat: false });
+    } else if (game.scene === 'opts') {
+      if (edge('up')) optsKey({ code: 'ArrowUp' });
+      if (edge('down')) optsKey({ code: 'ArrowDown' });
+      if (edge('left')) optsKey({ code: 'ArrowLeft' });
+      if (edge('right')) optsKey({ code: 'ArrowRight' });
+      if (edge('confirm')) optsKey({ code: 'Enter', repeat: false });
+      if (edge('select') || edge('start')) closeOpts();
+    } else if (game.scene === 'keys') {
+      if (edge('select') || edge('start')) closeKeys();
+    } else if (game.paused) {
+      if (edge('start')) game.paused = false;
+      if (edge('select')) toMenu();
+    } else if (game.over) {
+      if (edge('start') || (edge('confirm') && game.overT > 90)) continueAfterOver();
+      else if (edge('select')) toMenu();
+    } else {
+      if (edge('start')) game.paused = true;
+      if (edge('cw')) rotate(tgt, 1);
+      if (edge('ccw')) rotate(tgt, -1);
+    }
+    for (const k of ['up', 'down', 'left', 'right', 'cw', 'ccw', 'confirm', 'start', 'select']) pv[k] = r[k];
+  });
+}
+
+// ---------------------------------------------------------------------
+//  色ユーティリティ
+// ---------------------------------------------------------------------
+function hsl2hex(h, s = 1, l = 0.62) {
+  const a = s * Math.min(l, 1 - l);
+  const f = n => { const k = (n + h / 30) % 12; const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); return Math.round(255 * c).toString(16).padStart(2, '0'); };
+  return '#' + f(0) + f(8) + f(4);
+}
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+function chainColor(n) {
+  if (n >= 10) return hsl2hex((game.frame * 9) % 360);     // 10連鎖〜はレインボー
+  return n >= 8 ? '#ff4de0' : n >= 6 ? '#ff5a5a' : n >= 4 ? '#ff9d2e' : n >= 2 ? '#ffe14d' : '#ffffff';
+}
+const CUT_TEXT = ['いい感じ!', 'ナイスチェイン!', 'すごい連鎖!!', '大連鎖!!!', '超連鎖!!!!'];
+const cutTier = n => n >= 10 ? 4 : n >= 8 ? 3 : n >= 6 ? 2 : n >= 4 ? 1 : 0;
+
+// ---------------------------------------------------------------------
+//  タワー / 技術特訓 のデータ
+// ---------------------------------------------------------------------
+const TOWER_MAX = 20;
+const TOWER_KEY = 'puyo_tower_v1', LESSON_KEY = 'puyo_lessons_v1';
+let towerBest = 0, lessonsDone = [];
+try { towerBest = Math.max(0, Math.min(TOWER_MAX, parseInt(localStorage.getItem(TOWER_KEY) || '0', 10) || 0)); } catch (e) { towerBest = 0; }
+try { lessonsDone = JSON.parse(localStorage.getItem(LESSON_KEY) || '[]'); if (!Array.isArray(lessonsDone)) lessonsDone = []; } catch (e) { lessonsDone = []; }
+function saveProgress() {
+  try { localStorage.setItem(TOWER_KEY, String(towerBest)); localStorage.setItem(LESSON_KEY, JSON.stringify(lessonsDone)); } catch (e) { /* 保存不可 */ }
+}
+const TOWER_NAMES = ['ひよっこ', 'ぷよ見習い', 'わくわく', 'ころころ', 'ぷよ番長', 'ふわふわ', 'きらきら', 'どきどき', 'ぐるぐる', 'ぷよ将軍',
+  'ひらめき', 'ずんずん', 'ばくばく', 'ぎらぎら', 'ぷよ大魔王', 'しんしん', 'めらめら', 'ごろごろ', 'ぴかぴか', 'ぷよ神'];
+function towerInfo(f) {
+  const boss = f % 5 === 0, mission = !boss && f % 3 === 0;
+  if (mission) { const n = 2 + Math.floor(f / 7); return { f, type: 'mission', boss: false, name: 'ミッション', goal: { type: 'chain', n }, limit: 10 + n * 5 }; }
+  return { f, type: 'battle', boss, name: TOWER_NAMES[f - 1], lv: Math.min(5, 1 + Math.floor((f - 1) / 4) + (boss ? 1 : 0)), speed: 1 + (f - 1) * 0.02 + (boss ? 0.15 : 0) };
+}
+// 盤面は下の段から。1=赤 2=緑 3=青 4=黄 5=紫 6=おじゃま。 pieces=[軸の色, 子の色]  sol=[軸のx, 向き(0=子が上,1=右,2=下,3=左)]
+const LESSONS = [
+  { title: '基本の4つ消し', desc: '同じ色を4つつなげると消えます。赤が3つ並んでいるので、右はしに赤を置こう。', goal: { type: 'chain', n: 1 },
+    rows: ['111000'], pieces: [[1, 2], [1, 3]], sol: [[3, 0]] },
+  { title: '2連鎖', desc: '赤を消すと、上の緑が落ちてきて、緑のかたまりとつながります。', goal: { type: 'chain', n: 2 },
+    rows: ['210000', '210000', '210000', '020000'], pieces: [[1, 4], [3, 4]], sol: [[2, 0]] },
+  { title: '3連鎖 (階段積み)', desc: '階段の形に積むと、1つ消すだけで次々に連鎖します。いちばん右に赤を置こう。', goal: { type: 'chain', n: 3 },
+    rows: ['321000', '321000', '321000', '032000'], pieces: [[1, 4], [1, 4]], sol: [[3, 0]] },
+  { title: '4連鎖 (階段積み)', desc: '階段が長くなっても考え方は同じ。ひとつ消せば最後まで続きます。', goal: { type: 'chain', n: 4 },
+    rows: ['532100', '532100', '532100', '053200'], pieces: [[1, 4], [1, 4]], sol: [[4, 0]] },
+  { title: '同時消し', desc: '2色を同時に消すと「色数ボーナス」で得点が上がります。', goal: { type: 'colors', n: 2 },
+    rows: ['102000', '102000', '102000'], pieces: [[1, 2], [1, 2]], sol: [[0, 1]] },
+  { title: '連結ボーナス', desc: '一度に多くつなげて消すほど「連結ボーナス」が増えます。5個以上を狙おう。', goal: { type: 'group', n: 5 },
+    rows: ['110110'], pieces: [[1, 3], [1, 3]], sol: [[2, 0]] },
+  { title: '全消し', desc: '盤面のぷよをすべて消すと「ぜんけし」。次の消去でボーナス得点とおじゃま30個!', goal: { type: 'allclear', n: 1 },
+    rows: ['210000', '210000', '210000', '020000'], pieces: [[1, 2], [1, 2]], sol: [[2, 0]] },
+  { title: 'おじゃまを消す', desc: 'おじゃまぷよは、となりのぷよが消えると一緒に消えます。3個まとめて消そう。', goal: { type: 'ojama', n: 3 },
+    rows: ['111066', '066000'], pieces: [[1, 4], [1, 4]], sol: [[3, 0]] },
+];
+function goalText(g) {
+  return { chain: `${g.n}連鎖以上をつくる`, colors: `${g.n}色を同時に消す`, group: `${g.n}個以上つなげて消す`, allclear: '盤面を全部消す (ぜんけし)', ojama: `おじゃまぷよを${g.n}個消す` }[g.type] || '';
+}
+function loadRows(p, rows) {
+  rows.forEach((str, i) => { for (let c = 0; c < COLS; c++) { const v = +str[c] || 0; p.board[ROWS - 1 - i][c] = v; } });
+}
+const fixedSeq = pieces => ({ get: i => pieces[i] || null });
+
+// ---------------------------------------------------------------------
+//  操作中ぷよのモーション（回転・移動・接地）
+// ---------------------------------------------------------------------
+const wrapA = a => Math.atan2(Math.sin(a), Math.cos(a));
+function animPiece(p) {
+  const m = settings.rotAnim;
+  p.vx += (p.x - p.vx) * (m ? 0.55 : 1); if (Math.abs(p.x - p.vx) < 0.01) p.vx = p.x;
+  const tgt = p.rot * Math.PI / 2, d = wrapA(tgt - p.ang);
+  if (m === 0) { p.ang = tgt; p.angV = 0; }
+  else if (m === 1) { p.angV = d * 0.42; p.ang += p.angV; if (Math.abs(d) < 0.01) { p.ang = tgt; p.angV = 0; } }
+  else {                                                         // バネ: 少し行き過ぎてぷるんと戻る
+    p.angV = (p.angV || 0) * 0.5 + d * 0.24; p.ang += p.angV;
+    if (Math.abs(d) < 0.004 && Math.abs(p.angV) < 0.004) { p.ang = tgt; p.angV = 0; }
+  }
+  p.pulse = (p.pulse || 0) * 0.8; p.visY = (p.visY || 0) * 0.7; if (Math.abs(p.visY) < 0.005) p.visY = 0;
+  if (m > 0) {
+    p.trail = p.trail || [];
+    if (Math.abs(d) > 0.25) p.trail.push({ a: p.ang, t: 0 });
+    for (const q of p.trail) q.t++;
+    p.trail = p.trail.filter(q => q.t < 7);
+  } else p.trail = [];
+}
+
+// ---------------------------------------------------------------------
+//  プレイヤー（フィールド1つ分のロジック＋演出状態）
+// ---------------------------------------------------------------------
+class Player {
+  constructor(idx, px, seq, vs) {
+    this.idx = idx; this.px = px; this.fx = px + 20; this.seq = seq; this.vs = vs; this.opp = null;
+    this.label = vs ? (idx === 0 ? 'PLAYER 1' : 'PLAYER 2') : 'SCORE ATTACK';
+    this.color = vs ? (idx === 0 ? '#ff7f8f' : '#6fc6ff') : '#ffd85a';
+    this.board = Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
+    this.state = 'wait'; this.piece = null; this.rotQ = [];
+    this.falling = []; this.erasing = []; this.pops = []; this.particles = []; this.rings = [];
+    this.score = 0; this.chain = 0; this.maxChain = 0; this.lastChain = 0; this.chainShowT = 0;
+    this.lastStep = null; this.totalErased = 0; this.carry = 0; this.pending = 0; this.sentTotal = 0;
+    this.zenkeshi = false; this.seqPos = 0; this.pieceCount = 0; this.timer = 0;
+    this.lastDir = 0; this.dasT = 0; this.lockT = 0; this.groundT = 0;
+    this.fallV = 0; this.fallMode = 'chain'; this.dead = false; this.result = null;
+    // 演出
+    this.shake = 0; this.flashA = 0; this.flashC = '#ffffff'; this.glow = 0; this.glowN = 0;
+    this.freeze = 0; this.card = null; this.cutin = null; this.chainTotal = 0; this.barFlash = 0;
+    this.squash = new Map(); this.winFx = 0; this.cpu = null; this.danger = false;
+    this.emitters = []; this.bolts = []; this.waves = []; this.meteors = []; this.later = [];
+    this.goalDef = null; this.goalFlag = null; this.stats = { maxGroup: 0, maxColors: 0, ojama: 0, allClear: false };
+    this.speedMul = 1; this.showWins = vs; this.winText = null; this.loseText = null; this.spinCount = 0;
+  }
+
+  // ---- 盤面判定 ----
+  blocked(x, y) {
+    if (x < 0 || x >= COLS || y >= ROWS) return true;
+    if (y < 0) return false;
+    return this.board[y][x] !== 0;
+  }
+  fits(x, y, rot) {
+    const dx = OFFS[rot][0], dy = OFFS[rot][1];
+    const f = Math.floor(y + 1e-6), frac = y - f;
+    const rows = frac > 1e-6 ? [f, f + 1] : [f];
+    for (const r of rows) {
+      if (this.blocked(x, r) || this.blocked(x + dx, r + dy)) return false;
+    }
+    return true;
+  }
+  isResting() {
+    const p = this.piece, f = Math.floor(p.y + 1e-6);
+    if (p.y - f > 1e-6) return false;
+    return !this.fits(p.x, f + 1, p.rot);
+  }
+  fallSpeed() {
+    const base = [1 / 48, 1 / 32, 1 / 20][settings.speed];
+    const lvl = settings.mode === 'solo' ? Math.min(12, Math.floor(this.pieceCount / 10)) : 0;
+    return base * (1 + lvl * 0.15) * this.speedMul;
+  }
+  level() { return settings.mode === 'solo' ? Math.min(12, Math.floor(this.pieceCount / 10)) + 1 : 0; }
+
+  colHeight(c) { for (let r = 0; r < ROWS; r++) if (this.board[r][c]) return ROWS - r; return 0; }
+
+  // ---- 出現 ----
+  spawn() {
+    if (this.goalDef && this.seqPos >= this.goalDef.limit) { this.state = 'idle'; this.piece = null; this.goalFlag = 'fail'; return; }
+    if (this.board[1][2]) { this.die(); return; }
+    const pair = this.seq.get(this.seqPos++);
+    this.piece = { x: 2, y: 1, rot: 0, c1: pair[0], c2: pair[1], vx: 2, ang: 0, angV: 0, pulse: 0, visY: 0, trail: [] };
+    this.pieceCount++;
+    this.lockT = 0; this.groundT = 0; this.rotQ.length = 0; this.spinCount = 0;
+    const h = held[this.idx];
+    this.lastDir = (h.right ? 1 : 0) - (h.left ? 1 : 0); this.dasT = DAS_T[settings.das][0];
+    if (!this.cpu) sfx.spawn();
+    this.state = 'control';
+  }
+  die() {
+    this.state = 'dead'; this.dead = true; this.piece = null;
+    this.flashA = 0.85; this.flashC = '#ff3030'; this.shake = 20; rumble(this.idx, 1, 600);
+  }
+
+  // ---- 操作 ----
+  tryMove(dir) {
+    const p = this.piece;
+    if (this.fits(p.x + dir, p.y, p.rot)) { p.x += dir; this.lockT = 0; if (!this.cpu) sfx.move(); return true; }
+    return false;
+  }
+  attempt(nr) {
+    const p = this.piece, dx = OFFS[nr][0], dy = OFFS[nr][1];
+    if (this.fits(p.x, p.y, nr)) { p.rot = nr; return true; }
+    if (this.fits(p.x - dx, p.y - dy, nr)) { const oy = p.y; p.x -= dx; p.y -= dy; p.visY = (p.visY || 0) + (oy - p.y); p.rot = nr; return true; }
+    return false;
+  }
+  tryRotate(d) {
+    const p = this.piece, nr = (p.rot + d + 4) % 4;
+    let ok = this.attempt(nr);
+    if (!ok && nr % 2 === 1) ok = this.attempt((p.rot + 2) % 4);
+    if (ok) { this.lockT = 0; p.pulse = 1; if (!this.cpu) sfx.rotate(); if (++this.spinCount > 24) this.groundT = GROUND_MAX; }   // 回し続けても必ず固定される
+  }
+  control() {
+    const p = this.piece, h = held[this.idx];
+    for (const d of this.rotQ) this.tryRotate(d);
+    this.rotQ.length = 0;
+
+    const dir = (h.right ? 1 : 0) - (h.left ? 1 : 0);
+    if (dir !== this.lastDir) { this.lastDir = dir; this.dasT = 0; if (dir) this.tryMove(dir); }
+    else if (dir) { this.dasT++; const dd = DAS_T[settings.das]; if (this.dasT >= dd[0] && (this.dasT - dd[0]) % dd[1] === 0) this.tryMove(dir); }
+
+    const down = h.down;
+    if (!this.isResting()) {
+      let v = this.fallSpeed(); if (down) v = Math.max(v, SOFT_T[settings.soft]);
+      const oldRow = Math.floor(p.y + 1e-6);
+      const ny = p.y + v;
+      if (this.fits(p.x, ny, p.rot)) p.y = ny; else p.y = Math.floor(ny + 1e-6);
+      const nr = Math.floor(p.y + 1e-6);
+      if (nr > oldRow) { if (this.spinCount <= 24) this.groundT = 0; if (down) this.score += nr - oldRow; }
+    }
+    if (this.isResting()) {
+      this.lockT++; this.groundT++;
+      if (down || this.lockT >= LOCK || this.groundT >= GROUND_MAX) this.lock();
+    } else this.lockT = 0;
+  }
+  guideY() {
+    const p = this.piece; let y = Math.floor(p.y + 1e-6);
+    while (this.fits(p.x, y + 1, p.rot)) y++;
+    return y;
+  }
+  lock() {
+    const p = this.piece, y = Math.round(p.y), dx = OFFS[p.rot][0], dy = OFFS[p.rot][1];
+    if (y >= 0) { this.board[y][p.x] = p.c1; this.squash.set(y * COLS + p.x, 9); }
+    if (y + dy >= 0) { this.board[y + dy][p.x + dx] = p.c2; this.squash.set((y + dy) * COLS + p.x + dx, 9); }
+    this.piece = null;
+    if (!this.cpu) sfx.lock();
+    this.startFall('chain');
+  }
+
+  // ---- 落下 ----
+  startFall(mode) {
+    this.fallMode = mode; this.falling = [];
+    for (let c = 0; c < COLS; c++) {
+      let dest = ROWS - 1;
+      for (let r = ROWS - 1; r >= 0; r--) {
+        const v = this.board[r][c]; if (!v) continue;
+        if (r !== dest) { this.falling.push({ x: c, y: r, ty: dest, color: v }); this.board[r][c] = 0; }
+        dest--;
+      }
+    }
+    this.fallV = 0.1;
+    if (!this.falling.length) { this.afterFall(); return; }
+    this.state = 'fall';
+  }
+  updateFall() {
+    this.fallV = Math.min(0.8, this.fallV + 0.05);
+    let moving = false, landed = false;
+    for (const f of this.falling) {
+      if (f.done) continue;
+      f.y += this.fallV;
+      if (f.y >= f.ty) { f.y = f.ty; f.done = true; this.board[f.ty][f.x] = f.color; this.squash.set(f.ty * COLS + f.x, 9); landed = true; }
+      else moving = true;
+    }
+    if (!moving) {
+      this.falling = [];
+      if (this.fallMode === 'ojama') { sfx.land(); this.flashA = Math.max(this.flashA, 0.3); this.flashC = '#ff3030'; this.shake = Math.max(this.shake, 8); }
+      this.afterFall();
+    } else if (landed && this.fallMode === 'ojama') this.shake = Math.max(this.shake, 4);
+  }
+  afterFall() {
+    if (this.fallMode === 'ojama') { this.spawn(); return; }
+    this.state = 'gap'; this.timer = this.chain > 0 ? 8 : 1;
+  }
+
+  // ---- 消去・連鎖 ----
+  checkErase() {
+    const seen = new Uint8Array(ROWS * COLS), groups = [];
+    for (let r = 1; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+      const col = this.board[r][c];
+      if (col < 1 || col > 5 || seen[r * COLS + c]) continue;
+      const st = [[c, r]], cells = []; seen[r * COLS + c] = 1;
+      while (st.length) {
+        const [x, y] = st.pop(); cells.push([x, y]);
+        for (const [dx, dy] of OFFS) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || nx >= COLS || ny < 1 || ny >= ROWS) continue;
+          if (seen[ny * COLS + nx] || this.board[ny][nx] !== col) continue;
+          seen[ny * COLS + nx] = 1; st.push([nx, ny]);
+        }
+      }
+      if (cells.length >= 4) groups.push({ color: col, cells });
+    }
+    if (!groups.length) { this.chainEnd(); return; }
+    this.startErase(groups);
+  }
+  startErase(groups) {
+    this.chain++;
+    const erase = [], key = new Set(), colors = new Set();
+    let cleared = 0, conn = 0, sx = 0, sy = 0;
+    for (const g of groups) {
+      cleared += g.cells.length; colors.add(g.color); conn += CONNECT[Math.min(g.cells.length, 11)];
+      for (const [x, y] of g.cells) { erase.push({ x, y, color: g.color }); key.add(y * COLS + x); sx += x; sy += y; }
+    }
+    for (const e of erase.slice()) {
+      for (const [dx, dy] of OFFS) {
+        const nx = e.x + dx, ny = e.y + dy;
+        if (nx < 0 || nx >= COLS || ny < 1 || ny >= ROWS) continue;
+        if (this.board[ny][nx] === OJAMA && !key.has(ny * COLS + nx)) { key.add(ny * COLS + nx); erase.push({ x: nx, y: ny, color: OJAMA }); }
+      }
+    }
+    const st = this.stats;
+    st.maxGroup = Math.max(st.maxGroup, ...groups.map(g => g.cells.length)); st.maxColors = Math.max(st.maxColors, colors.size);
+    st.ojama += erase.filter(e => e.color === OJAMA).length;
+    const power = CHAIN_POWER[Math.min(this.chain - 1, CHAIN_POWER.length - 1)];
+    const mult = Math.max(1, Math.min(999, power + conn + COLOR_BONUS[colors.size - 1]));
+    let gain = 10 * cleared * mult, zb = 0;
+    if (this.zenkeshi) { zb = 2100; gain += zb; this.zenkeshi = false; }
+    this.score += gain; this.totalErased += cleared; this.chainTotal += gain;
+    this.lastStep = { cleared, mult, gain, zb };
+    this.lastChain = this.chain; this.maxChain = Math.max(this.maxChain, this.chain); this.chainShowT = 150;
+
+    const cxr = sx / cleared, cyr = sy / cleared;       // 中心から外側へ順番にはじける
+    for (const e of erase) { e.delay = Math.min(12, Math.round(Math.hypot(e.x - cxr, e.y - cyr) * 2.4)); e.popped = false; }
+    const cx = (cxr + 0.5) * CS, cy = (cyr + 0.5) * CS;
+
+    // おじゃま計算（攻撃は弾になって相手のバーへ飛んでいく）
+    if (this.vs) {
+      const tot = gain + this.carry; let n = Math.floor(tot / OJAMA_RATE); this.carry = tot - n * OJAMA_RATE;
+      let offset = 0;
+      if (this.pending > 0) { const off = Math.min(n, this.pending); this.pending -= off; n -= off; offset += off; }
+      for (const s of game.shots) { if (s.tgt === this && n > 0 && s.n > 0) { const off = Math.min(n, s.n); s.n -= off; n -= off; offset += off; } }   // 飛行中の弾も相殺
+      if (offset > 0) { this.pops.push({ text: '相殺!', x: FIELD_W / 2, y: FIELD_H * 0.16, t: 0, life: 70, size: 34, chain: 3, col: '#7fe8ff' }); this.barFlash = 24; sfx.offset(); voiceSay(this, 'sousai', 'そうさい！'); }
+      if (n > 0 && this.opp) {
+        game.shots.push({ x0: this.fx + cx, y0: FY + cy, x1: this.opp.fx + FIELD_W / 2, y1: 55, t: 0, dur: 38, n, tgt: this.opp, from: this, trail: [], x: this.fx + cx, y: FY + cy });
+        this.sentTotal += n; sfx.shot();
+      }
+    }
+
+    // ---- 演出 ----
+    const ch = this.chain;
+    this.pops.push({ text: '+' + gain, x: cx, y: cy + 34, t: 0, life: 60, size: 18, chain: 0 });
+    if (ch >= 2) this.pops.push({ text: ch + '連鎖!', x: cx, y: cy, t: 0, life: 85, size: 34 + Math.min(ch, 10) * 3, chain: ch });
+    if (zb) this.pops.push({ text: '全消しボーナス +2100', x: FIELD_W / 2, y: FIELD_H * 0.35, t: 0, life: 100, size: 22, chain: 9 });
+    const fk = FXK();
+    this.shake = Math.max(this.shake, Math.min(16, 3 + ch * 1.6) * fk);
+    this.flashA = Math.min(0.7, (0.12 + ch * 0.07) * Math.min(1, fk)); this.flashC = '#ffffff';
+    this.chainAnim(ch, cx, cy); voiceChain(this, ch);
+    this.glow = Math.min(1, 0.35 + ch * 0.1); this.glowN = ch;
+    if (ch >= 3) this.freeze = 3 + Math.min(ch, 10);                // ヒットストップ
+    if (ch >= 3) {
+      this.cutin = { t: 0, chain: ch, color: groups[0].color, life: ch >= 4 ? 44 : 32 };   // 攻撃カットイン
+      sfx.cutin(cutTier(ch));
+    }
+    if (ch >= 5) game.flash = Math.max(game.flash, 0.3 * Math.min(1, fk));
+    if (ch >= 6) game.shake = Math.max(game.shake, Math.min(12, ch) * fk);
+    rumble(this.idx, Math.min(1, 0.25 + ch * 0.1), 120 + ch * 30);
+    sfx.erase(ch);
+    this.erasing = erase; this.state = 'erase'; this.timer = 0;
+  }
+  popBurst(e) {
+    const x = (e.x + 0.5) * CS, y = (e.y + 0.5) * CS;
+    const col = e.color === OJAMA ? '#d6d9e8' : PAL[e.color].m, ch = this.chain;
+    for (let i = 0, n = Math.max(2, Math.round(7 * FXK())); i < n; i++) {
+      const a = Math.random() * Math.PI * 2, s = 1.5 + Math.random() * 3.2;
+      this.particles.push({ k: 'c', x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 2, life: 28 + Math.random() * 10, max: 38, color: col, r: 4 + Math.random() * 4, rot: 0, vr: 0, g: 0.25 });
+    }
+    if (ch >= 2) for (let i = 0; i < 3; i++) {
+      const a = Math.random() * Math.PI * 2, s = 2 + Math.random() * 4;
+      this.particles.push({ k: 's', x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 2.5, life: 36, max: 36, color: ch >= 6 ? '#ffffff' : col, r: 7 + Math.random() * 7, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4, g: 0.18 });
+    }
+    if (ch >= 4) for (let i = 0; i < 3; i++) {
+      const a = Math.random() * Math.PI * 2, s = 3 + Math.random() * 5;
+      this.particles.push({ k: 'k', x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 26, max: 26, color: '#fff7c0', r: 8 + Math.random() * 8, rot: 0, vr: 0.2, g: 0.05 });
+    }
+    this.rings.push({ x, y, t: 0, life: 18 + Math.min(ch, 8), color: col, r1: 46 + ch * 4 });
+    if (Math.random() < 0.5) sfx.pop();
+  }
+  confetti(n) {
+    const cols = ['#ff4a55', '#3fd45f', '#4a7dff', '#ffd531', '#b65cff', '#ffffff'];
+    for (let i = 0; i < n; i++) {
+      this.particles.push({ k: 'f', x: Math.random() * FIELD_W, y: -10 - Math.random() * 60, vx: (Math.random() - 0.5) * 3, vy: 1 + Math.random() * 3, life: 130 + Math.random() * 40, max: 150, color: cols[i % cols.length], r: 5 + Math.random() * 4, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4, g: 0.06 });
+    }
+  }
+  updateErase() {
+    this.timer++;
+    for (const e of this.erasing) {
+      if (!e.popped && this.timer >= ERASE_BASE + e.delay) { e.popped = true; this.popBurst(e); }
+    }
+    if (this.timer < ERASE_T) return;
+    for (const e of this.erasing) this.board[e.y][e.x] = 0;
+    this.erasing = [];
+    this.startFall('chain');
+  }
+  boardEmpty() {
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if (this.board[r][c]) return false;
+    return true;
+  }
+  chainEnd() {
+    if (this.chain >= 3) this.card = { t: 0, life: 135, chain: this.chain, total: this.chainTotal };   // 連鎖リザルト
+    if (this.chain > 0 && this.boardEmpty()) {
+      this.zenkeshi = true;
+      this.pops.push({ text: 'ぜんけし!', x: FIELD_W / 2, y: FIELD_H * 0.5, t: 0, life: 130, size: 56, chain: 10 });
+      this.cutin = { t: 0, chain: 0, color: 4, life: 66, zen: true };
+      this.confetti(Math.round(90 * FXK())); this.flashA = 0.7; this.flashC = '#ffe14d'; game.flash = Math.max(game.flash, 0.35);
+      sfx.zenkeshi(); sfx.cutin(3); rumble(this.idx, 0.9, 500); voiceSay(this, 'zenkeshi', 'ぜんけし！', 1.2);
+      this.stats.allClear = true;
+    }
+    this.chainTotal = 0; this.chain = 0;
+    if (this.goalDef) {                                                  // レッスン・ミッションの判定
+      if (this.goalCheck()) { this.state = 'idle'; this.piece = null; this.goalFlag = 'clear'; return; }
+      if (this.seqPos >= this.goalDef.limit) { this.state = 'idle'; this.piece = null; this.goalFlag = 'fail'; return; }
+    }
+    if (this.vs && this.pending > 0 && !(this.opp && this.opp.chain > 0)) { this.dropOjama(); return; }
+    this.spawn();
+  }
+  dropOjama() {
+    const n = Math.min(30, this.pending); this.pending -= n;
+    const rows = Math.floor(n / COLS), rem = n % COLS, cols = [0, 1, 2, 3, 4, 5];
+    for (let i = cols.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [cols[i], cols[j]] = [cols[j], cols[i]]; }
+    const extra = new Set(cols.slice(0, rem));
+    this.falling = [];
+    for (let c = 0; c < COLS; c++) {
+      let h = 0; for (let r = ROWS - 1; r >= 0 && this.board[r][c]; r--) h++;
+      const k = rows + (extra.has(c) ? 1 : 0);
+      for (let m = 0; m < k; m++) {
+        const ty = ROWS - 1 - h - m; if (ty < 0) continue;
+        this.falling.push({ x: c, y: -1.5 - m * 1.1 - Math.random() * 1.5, ty, color: OJAMA });
+      }
+    }
+    if (n >= 12) voiceSay(this, 'ugh', 'うわっ！');
+    this.fallMode = 'ojama'; this.fallV = 0.15; sfx.ojama(); rumble(this.idx, Math.min(1, 0.3 + n * 0.03), 250);
+    if (!this.falling.length) { this.spawn(); return; }
+    this.state = 'fall';
+  }
+
+  // ---- 連鎖アニメ（連鎖数が増えるほど派手に重なっていく）----
+  after(frames, fn) { this.later.push({ t: frames, fn }); }
+  chainAnim(ch, cx, cy) {
+    const k = FXK(), cc = chainColor(ch), N = n => Math.max(1, Math.round(n * k));
+    if (ch >= 2) {                                                        // きらめきのうずまき
+      const n = N(10 + ch * 2);
+      for (let i = 0; i < n; i++) {
+        const a = i / n * Math.PI * 2, sp = 2.2 + (i % 3) * 0.5;
+        this.particles.push({ k: 'k', x: cx, y: cy, vx: Math.cos(a) * sp - Math.sin(a) * 2.4, vy: Math.sin(a) * sp + Math.cos(a) * 2.4, life: 34, max: 34, color: i % 2 ? '#ffffff' : cc, r: 9 + (i % 4) * 2, rot: a, vr: 0.25, g: 0 });
+      }
+    }
+    if (ch >= 3) {                                                        // 花火
+      for (let s = 0; s < Math.min(4, ch - 1); s++) this.after(6 + s * 7, () => {
+        const fx = 30 + Math.random() * (FIELD_W - 60), fy = FIELD_H * (0.12 + Math.random() * 0.3), cols = [cc, '#ffffff', '#ffe14d'];
+        this.rings.push({ x: fx, y: fy, t: 0, life: 16, color: cc, r1: 50 });
+        const n = N(22);
+        for (let i = 0; i < n; i++) {
+          const a = i / n * Math.PI * 2 + Math.random() * 0.2, sp = 2 + Math.random() * 3.2;
+          this.particles.push({ k: i % 3 === 0 ? 's' : 'c', x: fx, y: fy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 40, max: 40, color: cols[i % 3], r: 4 + Math.random() * 4, rot: 0, vr: 0.2, g: 0.1 });
+        }
+      });
+    }
+    if (ch >= 4) {                                                        // 火柱
+      const cols = [0, 1, 2, 3, 4, 5].sort(() => Math.random() - 0.5).slice(0, Math.min(COLS, ch - 1));
+      cols.forEach((c, i) => this.after(i * 3, () => this.emitters.push({ x: c * CS + CS / 2, t: 0, life: 30, color: cc })));
+    }
+    if (ch >= 5) {                                                        // いなずま
+      const n = ch >= 11 ? 3 : ch >= 8 ? 2 : 1;
+      for (let i = 0; i < n; i++) this.after(i * 5, () => {
+        const pts = [], x0 = 20 + Math.random() * (FIELD_W - 40);
+        for (let j = 0; j <= 7; j++) { const u = j / 7; pts.push([x0 + (cx - x0) * u + (j && j < 7 ? (Math.random() - 0.5) * 46 : 0), -10 + (cy + 10) * u]); }
+        this.bolts.push({ pts, t: 0, life: 12, color: cc });
+        this.shake = Math.max(this.shake, 6);
+      });
+    }
+    if (ch >= 6) {                                                        // 流星群
+      const n = Math.min(8, ch - 3);
+      for (let i = 0; i < n; i++) this.after(i * 4, () => this.meteors.push({ x: -20 + Math.random() * FIELD_W * 0.7, y: -30, vx: 5 + Math.random() * 3, vy: 11 + Math.random() * 4, t: 0, life: 34, color: cc }));
+    }
+    if (ch >= 8) this.waves.push({ t: 0, life: 50 });                     // 虹の波
+    if (ch >= 10) game.shock.push({ x: this.fx + FIELD_W / 2, y: FY + cy, t: 0, life: 44, color: cc });   // 画面全体の衝撃波
+  }
+  drawChainFx() {                                                         // 盤面内の連鎖アニメ描画
+    for (const w of this.waves) {
+      const k = w.t / w.life, y = FIELD_H * (1 - k) - 20;
+      const g = ctx.createLinearGradient(0, y - 40, 0, y + 40);
+      const a = Math.sin(Math.PI * k) * 0.55;
+      for (let i = 0; i <= 6; i++) g.addColorStop(i / 6, hexA(hsl2hex(i * 60 + w.t * 8), i === 0 || i === 6 ? 0 : a));
+      ctx.fillStyle = g; ctx.fillRect(0, y - 40, FIELD_W, 80);
+    }
+    for (const b of this.bolts) {
+      const a = 1 - b.t / b.life; ctx.save(); ctx.globalAlpha = a * (b.t % 2 ? 0.6 : 1); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      ctx.shadowColor = b.color; ctx.shadowBlur = 18;
+      for (const [lw, col] of [[7, b.color], [2.5, '#ffffff']]) {
+        ctx.lineWidth = lw; ctx.strokeStyle = col; ctx.beginPath();
+        b.pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    for (const m of this.meteors) {
+      const g = ctx.createLinearGradient(m.x, m.y, m.x - m.vx * 5, m.y - m.vy * 5);
+      g.addColorStop(0, '#ffffff'); g.addColorStop(1, hexA(m.color, 0));
+      ctx.strokeStyle = g; ctx.lineWidth = 5; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(m.x, m.y); ctx.lineTo(m.x - m.vx * 5, m.y - m.vy * 5); ctx.stroke();
+      ctx.fillStyle = '#fff'; circle(m.x, m.y, 4);
+    }
+  }
+  updateChainFx() {
+    for (const l of this.later) l.t--;
+    const due = this.later.filter(l => l.t <= 0); this.later = this.later.filter(l => l.t > 0);
+    for (const l of due) l.fn();
+    for (const e of this.emitters) {
+      e.t++;
+      for (let i = 0; i < 3; i++) this.particles.push({ k: Math.random() < 0.3 ? 's' : 'c', x: e.x + (Math.random() - 0.5) * CS * 0.6, y: FIELD_H - Math.random() * 10, vx: (Math.random() - 0.5) * 1.2, vy: -(3 + Math.random() * 4), life: 24, max: 24, color: ['#ff5a2a', '#ffb02a', '#ffe86a', e.color][i], r: 6 + Math.random() * 6, rot: Math.random() * 6, vr: 0.2, g: -0.03 });
+    }
+    this.emitters = this.emitters.filter(e => e.t < e.life);
+    for (const b of this.bolts) b.t++;
+    this.bolts = this.bolts.filter(b => b.t < b.life);
+    for (const m of this.meteors) {
+      m.x += m.vx; m.y += m.vy; m.t++;
+      this.particles.push({ k: 'c', x: m.x, y: m.y, vx: (Math.random() - 0.5), vy: (Math.random() - 0.5), life: 14, max: 14, color: m.color, r: 3 + Math.random() * 3, rot: 0, vr: 0, g: 0 });
+      if (m.t >= m.life || m.y > FIELD_H) {
+        m.t = 999;
+        for (let i = 0; i < 6; i++) { const a = Math.random() * Math.PI * 2, sp = 1 + Math.random() * 3; this.particles.push({ k: 'c', x: m.x, y: Math.min(m.y, FIELD_H), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 1, life: 22, max: 22, color: '#ffffff', r: 3 + Math.random() * 3, rot: 0, vr: 0, g: 0.15 }); }
+      }
+    }
+    this.meteors = this.meteors.filter(m => m.t < 999);
+    for (const w of this.waves) w.t++;
+    this.waves = this.waves.filter(w => w.t < w.life);
+  }
+  goalCheck() {
+    const g = this.goalDef; if (!g) return false;
+    const s = this.stats;
+    switch (g.type) {
+      case 'chain': return this.maxChain >= g.n;
+      case 'colors': return s.maxColors >= g.n;
+      case 'group': return s.maxGroup >= g.n;
+      case 'allclear': return s.allClear;
+      case 'ojama': return s.ojama >= g.n;
+    }
+    return false;
+  }
+  // ---- 毎フレーム ----
+  update(active) {
+    if (this.freeze > 0) this.freeze--;
+    else if (active) {
+      switch (this.state) {
+        case 'control': this.control(); break;
+        case 'fall': this.updateFall(); break;
+        case 'gap': if (--this.timer <= 0) this.checkErase(); break;
+        case 'erase': this.updateErase(); break;
+      }
+    }
+    // 見た目だけの更新
+    for (const p of this.pops) p.t++;
+    this.pops = this.pops.filter(p => p.t < p.life);
+    for (const q of this.particles) { q.x += q.vx; q.y += q.vy; q.vy += q.g; q.rot += q.vr; q.life--; }
+    this.particles = this.particles.filter(q => q.life > 0);
+    for (const r of this.rings) r.t++;
+    this.rings = this.rings.filter(r => r.t < r.life);
+    if (this.chainShowT > 0 && this.chain === 0) this.chainShowT--;
+    this.danger = this.state === 'control' && this.colHeight(2) >= 10;           // バツ印の近くまで積み上がった
+    if (this.danger && !this.cpu && game.frame % 45 === 0) sfx.warn();
+    this.flashA *= 0.9; if (this.flashA < 0.01) this.flashA = 0;
+    this.shake *= 0.86; if (this.shake < 0.3) this.shake = 0;
+    if (this.chain === 0 && this.state !== 'erase') { this.glow *= 0.96; if (this.glow < 0.01) this.glow = 0; }
+    if (this.barFlash > 0) this.barFlash--;
+    if (this.cutin && ++this.cutin.t >= this.cutin.life) this.cutin = null;
+    if (this.card && ++this.card.t >= this.card.life) this.card = null;
+    for (const [k, v] of this.squash) { if (v <= 1) this.squash.delete(k); else this.squash.set(k, v - 1); }
+    if (this.state === 'won' && game.frame % 2 === 0) this.confetti(3);
+    this.updateChainFx();
+    if (this.piece) animPiece(this.piece);
+  }
+}
+
+// ---------------------------------------------------------------------
+//  CPU（強さ 1〜5）
+//   全22通りの置き方を盤面シミュレーションで評価して決める。
+//   強いほど: 反応と操作が速い / ミスが少ない / 次のぷよまで先読み / 連鎖を育ててから撃つ / 危ない時は即座に消す
+// ---------------------------------------------------------------------
+const CPU_LV = [null,
+  { name: 'かんたん',   react: 45, act: 10, soft: false, mist: 0.30, look: 0, pot: 0,   conn: 1.0, thr: 1, bump: 2 },
+  { name: 'ふつう',     react: 30, act: 7,  soft: true,  mist: 0.12, look: 0, pot: 0.5, conn: 1.5, thr: 2, bump: 3 },
+  { name: 'むずかしい', react: 16, act: 4,  soft: true,  mist: 0.04, look: 3, pot: 1,   conn: 1.5, thr: 3, bump: 3 },
+  { name: 'つよい',     react: 8,  act: 3,  soft: true,  mist: 0.01, look: 5, pot: 1.5, conn: 1.5, thr: 4, bump: 3 },
+  { name: '超つよい',   react: 3,  act: 2,  soft: true,  mist: 0,    look: 7, pot: 2,   conn: 1.5, thr: 5, bump: 3 },
+];
+const cloneBoard = b => b.map(r => r.slice());
+function colHeightsOf(b) {
+  const h = new Array(COLS).fill(0);
+  for (let c = 0; c < COLS; c++) for (let r = 0; r < ROWS; r++) if (b[r][c]) { h[c] = ROWS - r; break; }
+  return h;
+}
+function findGroupsOf(b, minSize) {
+  const seen = new Uint8Array(ROWS * COLS), groups = [];
+  for (let r = 1; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const col = b[r][c]; if (col < 1 || col > 5 || seen[r * COLS + c]) continue;
+    const st = [[c, r]], cells = []; seen[r * COLS + c] = 1;
+    while (st.length) {
+      const [x, y] = st.pop(); cells.push([x, y]);
+      for (const [dx, dy] of OFFS) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || nx >= COLS || ny < 1 || ny >= ROWS) continue;
+        if (seen[ny * COLS + nx] || b[ny][nx] !== col) continue;
+        seen[ny * COLS + nx] = 1; st.push([nx, ny]);
+      }
+    }
+    if (cells.length >= minSize) groups.push({ color: col, cells });
+  }
+  return groups;
+}
+function compactBoard(b) {
+  for (let c = 0; c < COLS; c++) {
+    let w = ROWS - 1;
+    for (let r = ROWS - 1; r >= 0; r--) { const v = b[r][c]; if (v) { if (r !== w) { b[w][c] = v; b[r][c] = 0; } w--; } }
+  }
+}
+function simResolve(b) {                       // 盤面bを連鎖が終わるまで進める（本家と同じ得点式）
+  let chain = 0, score = 0, cleared = 0;
+  for (;;) {
+    const groups = findGroupsOf(b, 4); if (!groups.length) break;
+    chain++;
+    const colors = new Set(); let n = 0, conn = 0; const kill = [];
+    for (const g of groups) { colors.add(g.color); n += g.cells.length; conn += CONNECT[Math.min(g.cells.length, 11)]; for (const c of g.cells) kill.push(c); }
+    const oj = [];
+    for (const [x, y] of kill) for (const [dx, dy] of OFFS) { const nx = x + dx, ny = y + dy; if (nx < 0 || nx >= COLS || ny < 1 || ny >= ROWS) continue; if (b[ny][nx] === OJAMA) oj.push([nx, ny]); }
+    for (const [x, y] of kill) b[y][x] = 0;
+    for (const [x, y] of oj) b[y][x] = 0;
+    const mult = Math.max(1, Math.min(999, CHAIN_POWER[Math.min(chain - 1, CHAIN_POWER.length - 1)] + conn + COLOR_BONUS[colors.size - 1]));
+    score += 10 * n * mult; cleared += n; compactBoard(b);
+  }
+  return { chain, score, cleared };
+}
+function placePair(b, x, rot, c1, c2) {
+  if ((rot === 1 && x > COLS - 2) || (rot === 3 && x < 1)) return false;
+  const h = colHeightsOf(b);
+  const put = (col, color) => { const r = ROWS - 1 - h[col]; if (r < 0) return; b[r][col] = color; h[col]++; };
+  if (rot === 0) { put(x, c1); put(x, c2); }
+  else if (rot === 2) { put(x, c2); put(x, c1); }
+  else if (rot === 1) { put(x, c1); put(x + 1, c2); }
+  else { put(x, c1); put(x - 1, c2); }
+  return true;
+}
+function reachable(b, x, rot) {                // 出現位置から横に動けるか
+  for (let c = Math.min(2, x); c <= Math.max(2, x); c++) if (b[1][c] || b[0][c]) return false;
+  if (rot === 1 && b[1][x + 1]) return false;
+  if (rot === 3 && b[1][x - 1]) return false;
+  return true;
+}
+function chainPotential(b) {                   // 「あと1個ぷよを置いたら何連鎖するか」の最大値
+  let best = 0; const h = colHeightsOf(b);
+  for (let color = 1; color <= settings.colors; color++) for (let c = 0; c < COLS; c++) {
+    if (h[c] >= ROWS - 2) continue;
+    const t = cloneBoard(b); t[ROWS - 1 - h[c]][c] = color;
+    const r = simResolve(t);
+    if (r.chain >= 2) { const v = r.chain * r.chain * 35 + Math.min(r.score, 30000) / 25; if (v > best) best = v; }
+  }
+  return best;
+}
+function evalBoard(b, lv, withPot) {
+  if (b[1][2]) return -1e7;                    // 窒息
+  const h = colHeightsOf(b); let s = 0;
+  for (let c = 0; c < COLS; c++) if (h[c] > 8) s -= (h[c] - 8) * (h[c] - 8) * 40;
+  if (h[2] >= 9) s -= 600 * (h[2] - 8);
+  for (let c = 0; c < COLS - 1; c++) s -= Math.abs(h[c] - h[c + 1]) * lv.bump;
+  for (const g of findGroupsOf(b, 2)) s += (g.cells.length === 2 ? 2 : 8) * lv.conn;
+  if (withPot && lv.pot > 0) s += lv.pot * chainPotential(b);
+  return s;
+}
+function candScore(res, b, lv, thr, withPot) {
+  if (b[1][2]) return -1e7;
+  const ev = evalBoard(b, lv, withPot);
+  if (res.chain > 0) {
+    if (res.chain >= thr || lv.thr === 1) return 1e4 + res.score * 0.5 + ev * 0.3;     // 撃つ
+    return ev - 500 - res.cleared * 8 + res.score * 0.01;                              // 小さい連鎖で撃つのはもったいない
+  }
+  return ev;
+}
+function cpuPlan(p) {
+  const lv = p.cpu.lv, pc = p.piece, b0 = p.board;
+  const hs = colHeightsOf(b0), maxH = Math.max(...hs);
+  let thr = lv.thr;
+  if (maxH >= 9 || hs[2] >= 8) thr = 1;        // 危ない: とにかく消す
+  else if (p.pending >= 6) thr = Math.min(thr, 2);   // おじゃまが来る: 早めに撃って相殺
+  const next = p.seq.get(p.seqPos);
+  const cands = [];
+  for (let rot = 0; rot < 4; rot++) for (let x = 0; x < COLS; x++) {
+    const b = cloneBoard(b0);
+    if (!placePair(b, x, rot, pc.c1, pc.c2) || !reachable(b0, x, rot)) continue;
+    const res = simResolve(b);
+    cands.push({ x, rot, b, v: candScore(res, b, lv, thr, true), fired: res.chain > 0 && (res.chain >= thr || lv.thr === 1) });
+  }
+  if (!cands.length) return { x: pc.x, rot: pc.rot };
+  cands.sort((a, b) => b.v - a.v);
+  if (lv.look > 0) {                           // 次のぷよまで先読み
+    const K = Math.min(lv.look, cands.length);
+    for (let i = 0; i < K; i++) {
+      const c = cands[i]; if (c.v <= -1e6 || c.fired) continue;
+      let best = -1e7;
+      for (let rot = 0; rot < 4; rot++) for (let x = 0; x < COLS; x++) {
+        const b = cloneBoard(c.b);
+        if (!placePair(b, x, rot, next[0], next[1])) continue;
+        const v = candScore(simResolve(b), b, lv, thr, false);
+        if (v > best) best = v;
+      }
+      c.v += 0.5 * best;
+    }
+    cands.sort((a, b) => b.v - a.v);
+  }
+  let pick = cands[0];
+  if (Math.random() < lv.mist) { const pool = cands.filter(c => c.v > -1e6).slice(0, 5); if (pool.length) pick = pool[Math.floor(Math.random() * pool.length)]; }   // ミス
+  return { x: pick.x, rot: pick.rot };
+}
+Player.prototype.cpuStep = function () {       // CPUの「キー入力」を作る
+  const c = this.cpu, h = held[this.idx], lv = c.lv;
+  h.left = h.right = h.down = false;
+  if (this.state !== 'control' || !this.piece) { c.piece = null; return; }
+  const p = this.piece;
+  if (c.piece !== p) { c.piece = p; c.wait = lv.react; c.plan = null; c.cool = 0; c.stuck = 0; c.lastX = -1; c.rotTries = 0; }
+  if (c.wait > 0) { c.wait--; return; }
+  if (!c.plan) c.plan = cpuPlan(this);
+  const pl = c.plan;
+  if (c.cool > 0) { c.cool--; return; }
+  if (p.rot !== pl.rot) {
+    if (++c.rotTries > 5) { pl.rot = p.rot; pl.x = p.x; return; }       // 回せない形なら諦めてそのまま落とす
+    const d = (pl.rot - p.rot + 4) % 4; this.rotQ.push(d === 3 ? -1 : 1); c.cool = lv.act; return; }
+  if (p.x !== pl.x) {
+    if (c.lastX === p.x) { if (++c.stuck > 4) { pl.x = p.x; return; } } else c.stuck = 0;   // 動けないなら諦めて落とす
+    c.lastX = p.x;
+    if (p.x < pl.x) h.right = true; else h.left = true;
+    c.cool = lv.act; return;
+  }
+  if (lv.soft) h.down = true;
+};
+
+// ---------------------------------------------------------------------
+//  ゲーム進行
+// ---------------------------------------------------------------------
+function startGame(fromMenu) {
+  const mode = settings.mode;
+  if (fromMenu) {
+    game.wins = [0, 0];
+    if (mode === 'tower') game.floor = Math.max(1, Math.min(settings.towerFloor, towerMaxSel()));
+    if (mode === 'train') game.lessonIdx = settings.lesson;
+    saveSettings();
+  }
+  game.towerInfo = null; game.lesson = null; game.shock = [];
+  let ps;
+  const duel = (seq, lvObj) => {
+    const a = new Player(0, 70, seq, true), b = new Player(1, 550, seq, true);
+    a.opp = b; b.opp = a;
+    if (lvObj) b.cpu = { lv: lvObj, piece: null, plan: null, wait: 0, cool: 0, stuck: 0, lastX: -1 };
+    return [a, b];
+  };
+  if (mode === 'vs') ps = duel(new Sequence(settings.colors), null);
+  else if (mode === 'cpu') {
+    const lv = CPU_LV[settings.cpuLevel];
+    ps = duel(new Sequence(settings.colors), lv);
+    ps[1].label = 'CPU ' + lv.name; ps[1].color = '#8fe8a8';
+  } else if (mode === 'tower') {
+    const info = towerInfo(game.floor); game.towerInfo = info;
+    if (info.type === 'battle') {
+      ps = duel(new Sequence(4), CPU_LV[info.lv]);
+      ps[0].label = 'YOU'; ps[1].label = info.name; ps[1].color = info.boss ? '#ff9a4a' : '#8fe8a8';
+      ps[1].speedMul = info.speed; ps.forEach(p => { p.showWins = false; });
+      ps[0].winText = game.floor === TOWER_MAX ? 'TOWER CLEAR!' : 'FLOOR CLEAR!'; ps[0].loseText = 'LOSE';
+    } else {
+      const p = new Player(0, 310, new Sequence(4), false);
+      p.goalDef = { type: info.goal.type, n: info.goal.n, limit: info.limit };
+      p.label = `TOWER ${info.f}F  MISSION`; p.color = '#ffb35a'; p.winText = 'CLEAR!'; p.loseText = 'FAILED';
+      ps = [p];
+    }
+  } else if (mode === 'train') {
+    const L = LESSONS[game.lessonIdx]; game.lesson = L;
+    const p = new Player(0, 310, fixedSeq(L.pieces), false);
+    loadRows(p, L.rows);
+    p.goalDef = { type: L.goal.type, n: L.goal.n, limit: L.pieces.length, sol: L.sol };
+    p.label = `LESSON ${game.lessonIdx + 1}`; p.color = '#8fe8a8'; p.winText = 'CLEAR!'; p.loseText = 'もう一度!';
+    ps = [p];
+  } else ps = [new Player(0, 310, new Sequence(settings.colors), false)];
+  game.players = ps;
+  game.scene = 'play'; game.over = false; game.paused = false; game.countdown = 150;
+  game.shots = []; game.sparks = []; game.flash = 0; game.shake = 0;
+  sfx.ready(); speak('ready', 'よーい', 1.1, 1);
+}
+function recordResult(win) {
+  if (!win) return;
+  if (settings.mode === 'tower') { towerBest = Math.max(towerBest, game.floor); saveProgress(); }
+  if (settings.mode === 'train') { lessonsDone[game.lessonIdx] = true; saveProgress(); }
+}
+function continueAfterOver() {
+  const win = game.players.some(p => p.idx === 0 && p.result === 'win');
+  if (settings.mode === 'tower' && win) {
+    if (game.floor >= TOWER_MAX) { toMenu(); return; }
+    game.floor++; settings.towerFloor = game.floor; saveSettings();
+  } else if (settings.mode === 'train' && win) {
+    if (game.lessonIdx >= LESSONS.length - 1) { toMenu(); return; }
+    game.lessonIdx++; settings.lesson = game.lessonIdx; saveSettings();
+  }
+  startGame(false);
+}
+function toMenu() { game.scene = 'menu'; game.players = []; game.paused = false; game.over = false; game.shots = []; game.sparks = []; }
+
+function updateShots() {
+  for (const s of game.shots) {
+    s.t++;
+    const k = Math.min(1, s.t / s.dur), e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    const cxp = (s.x0 + s.x1) / 2, cyp = Math.min(s.y0, s.y1) - 170;
+    s.x = (1 - e) * (1 - e) * s.x0 + 2 * (1 - e) * e * cxp + e * e * s.x1;
+    s.y = (1 - e) * (1 - e) * s.y0 + 2 * (1 - e) * e * cyp + e * e * s.y1;
+    s.trail.push([s.x, s.y]); if (s.trail.length > 18) s.trail.shift();
+    if (s.t >= s.dur) {
+      s.done = true;
+      if (s.n > 0) {                                      // 着弾: おじゃまが相手のバーに積まれる
+        s.tgt.pending += s.n; s.tgt.barFlash = 28; s.tgt.shake = Math.max(s.tgt.shake, 6);
+        sfx.hit(); rumble(s.tgt.idx, Math.min(1, 0.3 + s.n * 0.02), 200);
+        for (let i = 0; i < 18; i++) { const a = Math.random() * Math.PI * 2, v = 2 + Math.random() * 5; game.sparks.push({ x: s.x1, y: s.y1, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 26, max: 26, r: 3 + Math.random() * 4, color: '#ffb0b0' }); }
+      }
+    }
+  }
+  game.shots = game.shots.filter(s => !s.done);
+  for (const q of game.sparks) { q.x += q.vx; q.y += q.vy; q.vy += 0.15; q.life--; }
+  game.sparks = game.sparks.filter(q => q.life > 0);
+}
+
+function step() {
+  game.frame++;
+  game.overT = game.over ? game.overT + 1 : 0;
+  pollPads();
+  for (let i = 0; i < 2; i++) for (const k of ['left', 'right', 'down']) held[i][k] = kb[i][k] || padS[i][k];
+  game.flash *= 0.88; if (game.flash < 0.01) game.flash = 0;
+  game.shake *= 0.88; if (game.shake < 0.3) game.shake = 0;
+  if (game.scene === 'opts' && game.demo) {                  // オプション画面の回転デモ
+    const d = game.demo; d.t++;
+    if (d.t % 50 === 0) { d.rot = (d.rot + 1) % 4; d.pulse = 1; }
+    animPiece(d);
+  }
+  if (game.scene !== 'play' || game.paused) return;
+  for (const sh of game.shock) sh.t++;
+  game.shock = game.shock.filter(sh => sh.t < sh.life);
+  if (game.countdown > 0) {
+    game.countdown--;
+    if (game.countdown === 60) { sfx.go(); speak('go', 'スタート！', 1.2, 1.2); game.players.forEach(p => p.spawn()); }
+    else if (game.countdown === 105 || game.countdown === 80) sfx.count();
+  }
+  const ps = game.players;
+  for (const p of ps) if (p.cpu && !game.over) p.cpuStep();
+  for (const p of ps) p.update(!game.over);
+  updateShots();
+  if (!game.over) {
+    const mode = settings.mode;
+    if (ps.length === 2) {
+      const dead = ps.filter(p => p.dead);
+      if (dead.length) {
+        game.over = true;
+        if (dead.length === 2) { ps.forEach(p => { p.result = 'draw'; }); sfx.lose(); }
+        else {
+          const w = ps.find(p => !p.dead), l = dead[0];
+          w.result = 'win'; w.state = 'won'; l.result = 'lose'; game.wins[w.idx]++; sfx.win();
+          w.confetti(Math.round(120 * FXK())); w.flashA = 0.5; w.flashC = '#ffe14d';
+          voiceSay(w, 'win', mode === 'tower' && w.idx === 0 ? 'クリア！' : 'かったー！', 1.15);
+          if (mode === 'tower') recordResult(w.idx === 0);
+        }
+      }
+    } else {
+      const p = ps[0];
+      if (p.goalFlag === 'clear') {
+        game.over = true; p.result = 'win'; p.state = 'won'; p.confetti(Math.round(120 * FXK())); p.flashA = 0.5; p.flashC = '#ffe14d';
+        sfx.win(); voiceSay(p, 'clear', settings.mode === 'train' ? 'せいかい！' : 'クリア！', 1.15); recordResult(true);
+      } else if (p.goalFlag === 'fail' || p.dead) {
+        game.over = true; p.result = 'lose'; sfx.lose();
+        if (p.goalDef) voiceSay(p, 'fail', 'ざんねん', 0.95); else voiceSay(p, 'lose', 'ばたんきゅー', 0.95);
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
+//  描画
+// ---------------------------------------------------------------------
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+function circle(x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); }
+function starPath(x, y, r, rot, pts = 5, inner = 0.45) {
+  ctx.beginPath();
+  for (let i = 0; i < pts * 2; i++) {
+    const a = rot + i * Math.PI / pts - Math.PI / 2, rad = i % 2 ? r * inner : r;
+    if (i) ctx.lineTo(x + Math.cos(a) * rad, y + Math.sin(a) * rad); else ctx.moveTo(x + Math.cos(a) * rad, y + Math.sin(a) * rad);
+  }
+  ctx.closePath();
+}
+
+// 画像の「実際に絵がある範囲」を測って、どの色・おじゃまも同じ見た目の大きさにそろえる。
+// （file:// で開いたときなどブラウザが画素の読み取りを禁止する場合は測れないので、従来の大きさ＋おじゃまサイズ調整で対応）
+const visBox = {};
+function spriteBox(c) {
+  if (c in visBox) return visBox[c];
+  const im = sprites[c]; if (!hasSprite(c)) return null;
+  let b = null;
+  try {
+    const n = 96, cv2 = document.createElement('canvas'); cv2.width = cv2.height = n;
+    const x2 = cv2.getContext('2d'), sc = n / Math.max(im.naturalWidth, im.naturalHeight);
+    x2.drawImage(im, 0, 0, im.naturalWidth * sc, im.naturalHeight * sc);
+    const d = x2.getImageData(0, 0, n, n).data; let x0 = n, y0 = n, x1 = -1, y1 = -1;
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (d[(y * n + x) * 4 + 3] > 24) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    if (x1 >= 0) b = { x: x0 / sc, y: y0 / sc, w: (x1 + 1 - x0) / sc, h: (y1 + 1 - y0) / sc };
+    if (b) b.frac = Math.max(b.w, b.h) / Math.max(im.naturalWidth, im.naturalHeight);
+  } catch (e) { b = null; }
+  visBox[c] = b; return b;
+}
+function refFrac() {                                   // 通常ぷよの「画像に対する絵の割合」の平均
+  let sum = 0, n = 0;
+  for (let c = 1; c <= 5; c++) { const b = spriteBox(c); if (b) { sum += b.frac; n++; } }
+  return n ? sum / n : 1;
+}
+function drawPuyo(cx, cy, color, s, flash) {
+  if (hasSprite(color)) {
+    const im = sprites[color], nw = im.naturalWidth, nh = im.naturalHeight, mul = color === OJAMA ? settings.ojScale : 1, bx = spriteBox(color);
+    if (bx) {
+      const k = s * 1.06 * refFrac() * mul / Math.max(bx.w, bx.h);
+      ctx.drawImage(im, cx - (bx.x + bx.w / 2) * k, cy - (bx.y + bx.h / 2) * k, nw * k, nh * k);
+    } else {
+      const k = s * 1.06 * mul / Math.max(nw, nh);
+      ctx.drawImage(im, cx - nw * k / 2, cy - nh * k / 2, nw * k, nh * k);
+    }
+    if (flash) { ctx.fillStyle = 'rgba(255,255,255,0.7)'; circle(cx, cy, s * 0.46); }
+    return;
+  }
+  const pal = PAL[color], r = s * 0.46;
+  const g = ctx.createRadialGradient(cx - r * 0.35, cy - r * 0.4, r * 0.1, cx, cy, r * 1.05);
+  g.addColorStop(0, pal.l); g.addColorStop(0.5, pal.m); g.addColorStop(1, pal.d);
+  ctx.fillStyle = g; circle(cx, cy, r);
+  if (color === OJAMA) {
+    ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.beginPath(); ctx.ellipse(cx - r * 0.38, cy - r * 0.45, r * 0.22, r * 0.12, -0.6, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(70,74,92,0.8)'; ctx.lineWidth = Math.max(1.5, s * 0.05); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(cx - s * 0.15, cy + s * 0.02, s * 0.07, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx + s * 0.15, cy + s * 0.02, s * 0.07, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+  } else {
+    const ex = s * 0.16, ey = cy - s * 0.03, er = s * 0.12;
+    ctx.fillStyle = '#fff'; circle(cx - ex, ey, er); circle(cx + ex, ey, er);
+    ctx.fillStyle = '#1c1c28'; circle(cx - ex + s * 0.02, ey + s * 0.025, er * 0.55); circle(cx + ex + s * 0.02, ey + s * 0.025, er * 0.55);
+    ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.ellipse(cx - r * 0.45, cy - r * 0.62, r * 0.2, r * 0.1, -0.5, 0, Math.PI * 2); ctx.fill();
+  }
+  if (flash) { ctx.fillStyle = 'rgba(255,255,255,0.78)'; circle(cx, cy, r); }
+}
+function drawPair(cx, topY, s, pair, alpha) {
+  if (!pair) return;
+  ctx.save(); ctx.globalAlpha = alpha;
+  if (pair[0] === pair[1] && !hasSprite(pair[0])) { ctx.fillStyle = PAL[pair[0]].m; ctx.fillRect(cx - s * 0.36, topY, s * 0.72, s); }
+  drawPuyo(cx, topY, pair[1], s, false);
+  drawPuyo(cx, topY + s, pair[0], s, false);
+  ctx.restore();
+}
+// ---- ヒント（技術特訓）: 置く場所をうっすら表示 ----
+function pairCells(p, x, rot) {
+  const dx = OFFS[rot][0], dy = OFFS[rot][1], h = c => p.colHeight(c), rowOf = c => ROWS - 1 - h(c);
+  if (rot === 0) return [[x, rowOf(x)], [x, rowOf(x) - 1]];
+  if (rot === 2) return [[x, rowOf(x) - 1], [x, rowOf(x)]];
+  return [[x, rowOf(x)], [x + dx, rowOf(x + dx)]];
+}
+function drawHint(p, sol) {
+  const pc = p.piece; if (!pc) return;
+  const [x, rot] = sol, cells = pairCells(p, x, rot), cols = [pc.c1, pc.c2];
+  const pulse = 0.5 + 0.2 * Math.sin(game.frame * 0.15);
+  cells.forEach(([cx, cy], i) => {
+    if (cy < 0) return;
+    ctx.save(); ctx.globalAlpha = pulse; drawPuyo(cx * CS + CS / 2, cy * CS + CS / 2, cols[i], CS * 0.92, false); ctx.restore();
+    ctx.save(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.5; ctx.setLineDash([4, 4]); ctx.globalAlpha = 0.9;
+    ctx.beginPath(); ctx.arc(cx * CS + CS / 2, cy * CS + CS / 2, CS * 0.5, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+  });
+}
+// ---- 操作中のぷよ（回転・接地モーション付き）----
+function drawLivePair(px, py, p, S, lockK, blink) {
+  const m = settings.rotAnim, str = m ? 1 + Math.min(0.2, Math.abs(p.angV || 0) * 0.35) : 1;
+  const sx = px + Math.sin(p.ang) * S * str, sy = py - Math.cos(p.ang) * S * str;
+  ctx.save();
+  if (m && lockK > 0) { const bot = Math.max(py, sy) + S / 2; ctx.translate(px, bot); ctx.scale(1 + 0.1 * lockK, 1 - 0.1 * lockK); ctx.translate(-px, -bot); }
+  if (m) for (const q of (p.trail || [])) {                         // 回転の残像
+    ctx.globalAlpha = (1 - q.t / 7) * 0.32;
+    drawPuyo(px + Math.sin(q.a) * S, py - Math.cos(q.a) * S, p.c2, S * 0.9, false);
+  }
+  ctx.globalAlpha = 1;
+  if (p.c1 === p.c2 && !hasSprite(p.c1)) {
+    ctx.strokeStyle = PAL[p.c1].m; ctx.lineWidth = S * 0.46 * 1.56; ctx.lineCap = 'butt';
+    ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(sx, sy); ctx.stroke();
+  }
+  const pu = p.pulse || 0;
+  drawPuyo(px, py, p.c1, S * (m ? 1 + 0.07 * pu : 1), blink);
+  drawPuyo(sx, sy, p.c2, S * (m ? 1 + 0.13 * pu : 1), blink);
+  ctx.restore();
+}
+function wrapLines(str, size, maxW, bold = false) {
+  ctx.font = `${bold ? 'bold ' : ''}${size}px ${FONT}`;
+  const out = []; let cur = '';
+  for (const ch of str) { if (ctx.measureText(cur + ch).width > maxW && !'。、！？」）'.includes(ch)) { out.push(cur); cur = ch; } else cur += ch; }
+  if (cur) out.push(cur);
+  return out;
+}
+function drawInfoPanel(p) {
+  const g = p.goalDef; if (!g) return;
+  const x = 20, y = FY, w = 290, L = game.lesson, ti = game.towerInfo, pad = 16;
+  panel(x, y, w, FIELD_H);
+  let yy = y + 30;
+  if (L) {
+    text(`LESSON ${game.lessonIdx + 1} / ${LESSONS.length}` + (lessonsDone[game.lessonIdx] ? '  ★クリア済み' : ''), x + pad, yy, 13, '#9fa6e0'); yy += 34;
+    text(L.title, x + pad, yy, 23, '#ffe14d'); yy += 12;
+    for (const l of wrapLines(L.desc, 14, w - pad * 2)) { yy += 22; text(l, x + pad, yy, 14, '#d6d9ff', 'left', false); }
+  } else if (ti) {
+    text(`TOWER  ${ti.f}F`, x + pad, yy, 13, '#9fa6e0'); yy += 34;
+    text('ミッション', x + pad, yy, 25, '#ffb35a'); yy += 12;
+    for (const l of wrapLines('ぷよがなくなる前に、目標の連鎖をつくろう。連鎖は同じ色のかたまりが落ちて、次々とつながると起こります。', 14, w - pad * 2)) { yy += 22; text(l, x + pad, yy, 14, '#d6d9ff', 'left', false); }
+  }
+  yy = Math.max(yy + 30, y + 250);
+  text('もくひょう', x + pad, yy, 13, '#9fa6e0'); yy += 8;
+  for (const l of wrapLines(goalText(g), 18, w - pad * 2, true)) { yy += 26; text(l, x + pad, yy, 18, '#ffffff'); }
+  const st = p.stats;
+  const prog = { chain: [p.maxChain, g.n, '最大連鎖'], colors: [st.maxColors, g.n, '同時に消した色'], group: [st.maxGroup, g.n, '最大連結'], allclear: [st.allClear ? 1 : 0, 1, 'ぜんけし'], ojama: [st.ojama, g.n, '消したおじゃま'] }[g.type];
+  yy += 30; text(prog[2], x + pad, yy, 13, '#9fa6e0'); text(`${Math.min(prog[0], prog[1])} / ${prog[1]}`, x + w - pad, yy, 16, '#ffffff', 'right');
+  yy += 10; rr(x + pad, yy, w - pad * 2, 10, 5); ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fill();
+  const k = Math.min(1, prog[0] / prog[1]);
+  if (k > 0) { rr(x + pad, yy, (w - pad * 2) * k, 10, 5); ctx.fillStyle = k >= 1 ? '#8fe8a8' : '#7f9bff'; ctx.fill(); }
+  const left = Math.max(0, g.limit - p.seqPos + (p.piece ? 1 : 0));
+  yy += 38; text('のこりのぷよ', x + pad, yy, 13, '#9fa6e0'); text(`${left} 組`, x + w - pad, yy, 20, left <= 2 ? '#ff8a8a' : '#ffffff', 'right');
+  if (L) { yy += 36; text('H キー: ヒント ' + (settings.hint ? 'ON (点滅が置く場所)' : 'OFF'), x + pad, yy, 13, '#ffd9a0', 'left', false); }
+}
+function drawSplash() {
+  if (game.countdown <= 60) return;
+  const L = game.lesson, ti = game.towerInfo; if (!L && !ti) return;
+  const k = Math.min(1, (150 - game.countdown) / 14), a = game.countdown < 80 ? (game.countdown - 60) / 20 : 1;
+  const two = game.players.length === 2, cx = two ? 500 : 450, y = two ? 640 : 700;
+  ctx.save(); ctx.globalAlpha = Math.max(0, a) * k;
+  let l1, l2, col = '#ffe14d';
+  if (L) { l1 = `LESSON ${game.lessonIdx + 1}`; l2 = L.title; }
+  else if (ti.type === 'mission') { l1 = `TOWER ${ti.f}F`; l2 = `ミッション: ${goalText(ti.goal)}`; col = '#ffb35a'; }
+  else { l1 = `TOWER ${ti.f}F`; l2 = ti.boss ? `ボス「${ti.name}」があらわれた!` : `${ti.name} とたいせん!`; col = ti.boss ? '#ff9a4a' : '#8fe8a8'; }
+  ctx.font = `bold 20px ${FONT}`; const w2 = Math.max(260, ctx.measureText(l2).width + 70);
+  rr(cx - w2 / 2, y - 34, w2, 80, 14); ctx.fillStyle = 'rgba(8,10,40,0.9)'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = col; ctx.stroke();
+  text(l1, cx, y - 6, 16, '#9fa6e0', 'center'); text(l2, cx, y + 28, 22, col, 'center');
+  ctx.restore();
+}
+function overHint() {
+  const m = settings.mode, win = game.players.some(p => p.idx === 0 && p.result === 'win');
+  if (m === 'tower') return win ? (game.floor >= TOWER_MAX ? 'タワー制覇!  Enter: メニューへ' : `Enter / パッドの+: ${game.floor + 1}階へ進む　　Backspace: メニューへ`) : 'Enter / パッドの+: この階にもう一度挑戦　　Backspace: メニューへ';
+  if (m === 'train') return win ? (game.lessonIdx >= LESSONS.length - 1 ? '全レッスンクリア!  Enter: メニューへ' : 'Enter / パッドの+: 次のレッスンへ　　Backspace: メニューへ') : 'Enter / パッドの+: もう一度　　Backspace: メニューへ';
+  return 'Enter / Space / パッドの+: もう一度　　Backspace / パッドの−: メニューへ';
+}
+function panel(x, y, w, h) {
+  rr(x, y, w, h, 10); ctx.fillStyle = 'rgba(8,10,32,0.75)'; ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(150,160,255,0.35)'; ctx.stroke();
+}
+function text(str, x, y, size, color, align = 'left', bold = true) {
+  ctx.font = `${bold ? 'bold ' : ''}${size}px ${FONT}`; ctx.textAlign = align; ctx.fillStyle = color; ctx.fillText(str, x, y);
+}
+
+// 予告の表示: 小ぷよ=1 / 大ぷよ=6 / 岩=30 / 星=180 / 月=360 / 王冠=720 個分。
+// 大きい単位から順に最少個数で並べる（7個なら「大×1 + 小×1」、30個なら「岩×1」）
+const OJ_KINDS = [720, 360, 180, 30, 6, 1];
+function ojamaIcons(n) {
+  const out = [];
+  for (const k of OJ_KINDS) while (n >= k && out.length < 24) { out.push(k); n -= k; }
+  return out;
+}
+function drawOjamaIcon(cx, cy, kind) {
+  if (kind > 1 && hasOj(kind)) {
+    const im = ojImgs[kind], k = kind >= 180 ? 38 : 32, sc = k / Math.max(im.naturalWidth, im.naturalHeight);
+    ctx.drawImage(im, cx - im.naturalWidth * sc / 2, cy - im.naturalHeight * sc / 2, im.naturalWidth * sc, im.naturalHeight * sc);
+    return;
+  }
+  const R = kind === 1 ? 8 : kind === 6 ? 13 : kind === 30 ? 15 : 17;      // 画像が無いときの代用アイコン
+  const dark = { 1: '#8e92a6', 6: '#8e92a6', 30: '#9a7b5a', 180: '#d9b43c', 360: '#8fc4ff', 720: '#ff9a4a' }[kind];
+  const g = ctx.createRadialGradient(cx - R * 0.3, cy - R * 0.35, 1, cx, cy, R);
+  g.addColorStop(0, '#fafbff'); g.addColorStop(1, dark);
+  ctx.fillStyle = g; circle(cx, cy, R);
+  if (kind > 1) text(String(kind), cx, cy + 5, kind >= 180 ? 12 : 13, '#2a2d44', 'center');
+}
+function drawOjamaBar(p) {
+  const x = p.fx, y = 34, w = FIELD_W, h = 42;
+  panel(x, y, w, h);
+  if (p.barFlash > 0) {
+    const a = p.barFlash / 28;
+    rr(x, y, w, h, 10); ctx.fillStyle = `rgba(255,90,90,${0.35 * a})`; ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = `rgba(255,140,140,${a})`; ctx.stroke();
+  }
+  if (!p.vs) { text('おじゃまなし', x + w / 2, y + 27, 14, '#7f86b8', 'center', false); return; }
+  const icons = ojamaIcons(p.pending).slice(0, 6);
+  icons.forEach((k, i) => drawOjamaIcon(x + 22 + i * 36, y + h / 2 + (p.barFlash > 0 ? Math.sin(p.barFlash) * 2 : 0), k));
+  if (p.pending > 0) {
+    ctx.font = `bold 15px ${FONT}`; ctx.textAlign = 'right'; ctx.lineJoin = 'round';
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(10,10,40,0.95)'; ctx.strokeText('×' + p.pending, x + w - 6, y + 38);
+    ctx.fillStyle = '#ffb0b0'; ctx.fillText('×' + p.pending, x + w - 6, y + 38);
+  }
+}
+
+function drawField(p) {
+  const fx = p.fx;
+  // 外枠（連鎖中は光る。10連鎖〜はレインボー）
+  rr(fx - 5, FY - 5, FIELD_W + 10, FIELD_H + 10, 10); ctx.fillStyle = '#040612'; ctx.fill();
+  ctx.save();
+  if (p.glow > 0.02) { ctx.shadowColor = chainColor(p.glowN); ctx.shadowBlur = 34 * p.glow; }
+  ctx.lineWidth = 3 + 3 * p.glow; ctx.strokeStyle = p.glow > 0.02 ? chainColor(p.glowN) : p.color; ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(fx, FY, FIELD_W, FIELD_H); ctx.clip();
+  ctx.translate(fx, FY);
+
+  const bg = ctx.createLinearGradient(0, 0, 0, FIELD_H);
+  bg.addColorStop(0, '#1d2358'); bg.addColorStop(1, '#0b0f2c');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, FIELD_W, FIELD_H);
+  if (p.glow > 0.05) {                                  // 連鎖中: 下から立ちのぼる光
+    const lg = ctx.createLinearGradient(0, FIELD_H, 0, 0);
+    lg.addColorStop(0, hexA(chainColor(p.glowN), 0.38 * p.glow)); lg.addColorStop(1, hexA(chainColor(p.glowN), 0));
+    ctx.fillStyle = lg; ctx.fillRect(0, 0, FIELD_W, FIELD_H);
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1; ctx.beginPath();
+  for (let c = 1; c < COLS; c++) { ctx.moveTo(c * CS, 0); ctx.lineTo(c * CS, FIELD_H); }
+  for (let r = 1; r < ROWS; r++) { ctx.moveTo(0, r * CS); ctx.lineTo(FIELD_W, r * CS); }
+  ctx.stroke();
+
+  const xc = 2 * CS + CS / 2, yc = 1 * CS + CS / 2;     // バツ印
+  ctx.strokeStyle = p.danger ? `rgba(255,60,60,${0.6 + 0.4 * Math.sin(game.frame * 0.4)})` : 'rgba(255,70,70,0.45)'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(xc - 9, yc - 9); ctx.lineTo(xc + 9, yc + 9); ctx.moveTo(xc + 9, yc - 9); ctx.lineTo(xc - 9, yc + 9); ctx.stroke();
+
+  const b = p.board, R = CS * 0.46;
+  const eMap = new Map(p.erasing.map(e => [e.y * COLS + e.x, e]));
+
+  // つながり（画像を使わないときだけ）
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const v = b[r][c]; if (!v || v === OJAMA || hasSprite(v) || eMap.has(r * COLS + c)) continue;
+    const cx = c * CS + CS / 2, cy = r * CS + CS / 2;
+    ctx.fillStyle = PAL[v].m;
+    if (c + 1 < COLS && b[r][c + 1] === v && !eMap.has(r * COLS + c + 1)) ctx.fillRect(cx, cy - R * 0.78, CS, R * 1.56);
+    if (r + 1 < ROWS && b[r + 1][c] === v && !eMap.has((r + 1) * COLS + c)) ctx.fillRect(cx - R * 0.78, cy, R * 1.56, CS);
+  }
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const v = b[r][c]; if (!v) continue;
+    const cx = c * CS + CS / 2, cy = r * CS + CS / 2, key = r * COLS + c, e = eMap.get(key);
+    if (e) {                                              // 消えるぷよ: 点滅 → ふくらむ → はじける
+      if (e.popped) continue;
+      let sc = 1, fl;
+      if (p.timer < 14) fl = Math.floor(p.timer / 2) % 2 === 0;
+      else {
+        const k = Math.min(1, (p.timer - 14) / (ERASE_BASE + e.delay - 14));
+        sc = 1 + 0.38 * k + 0.05 * Math.sin(p.timer * 1.3);
+        fl = k > 0.45 && Math.floor(p.timer / 2) % 2 === 0;
+      }
+      drawPuyo(cx, cy, v, CS * sc, fl);
+      continue;
+    }
+    const sq = p.squash.get(key);
+    if (sq) {                                             // 着地でぷるんとつぶれる
+      const k = sq / 9;
+      ctx.save(); ctx.translate(cx, cy + CS / 2); ctx.scale(1 + 0.18 * k, 1 - 0.18 * k);
+      drawPuyo(0, -CS / 2, v, CS, false); ctx.restore();
+    } else drawPuyo(cx, cy, v, CS, false);
+  }
+  for (const f of p.falling) drawPuyo(f.x * CS + CS / 2, f.y * CS + CS / 2, f.color, CS, false);
+
+  // 操作中のぷよ
+  const pc = p.piece;
+  if (pc && p.state === 'control' && p.goalDef && p.goalDef.sol && settings.hint) { const sol = p.goalDef.sol[p.seqPos - 1]; if (sol) drawHint(p, sol); }
+  if (pc && p.state === 'control') {
+    if (settings.guide) {
+      const gy = p.guideY();
+      if (gy - pc.y > 0.8) {
+        const dx = OFFS[pc.rot][0], dy = OFFS[pc.rot][1];
+        ctx.lineWidth = 3; ctx.setLineDash([5, 4]);
+        for (const [x, y, col] of [[pc.x, gy, pc.c1], [pc.x + dx, gy + dy, pc.c2]]) {
+          ctx.strokeStyle = PAL[col].m; ctx.globalAlpha = 0.75;
+          ctx.beginPath(); ctx.arc(x * CS + CS / 2, y * CS + CS / 2, R * 0.82, 0, Math.PI * 2); ctx.stroke();
+        }
+        ctx.setLineDash([]); ctx.globalAlpha = 1;
+      }
+    }
+    const px = pc.vx * CS + CS / 2, py = (pc.y + (pc.visY || 0)) * CS + CS / 2;
+    const lockK = settings.rotAnim && p.isResting() ? p.lockT / LOCK : 0;
+    drawLivePair(px, py, pc, CS, lockK, lockK > 0.75 && ((game.frame >> 1) & 1) === 1);
+  }
+
+  // 13段目(見えない段)を暗くする
+  ctx.fillStyle = 'rgba(4,6,18,0.62)'; ctx.fillRect(0, 0, FIELD_W, CS);
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, CS); ctx.lineTo(FIELD_W, CS); ctx.stroke();
+
+  // 衝撃波リング
+  for (const r of p.rings) {
+    const k = r.t / r.life, e = 1 - Math.pow(1 - k, 2);
+    ctx.globalAlpha = 1 - k; ctx.strokeStyle = r.color; ctx.lineWidth = 5 * (1 - k) + 1;
+    ctx.beginPath(); ctx.arc(r.x, r.y, 10 + (r.r1 - 10) * e, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // パーティクル（円・星・きらめき・紙吹雪）
+  for (const q of p.particles) {
+    const a = Math.max(0, q.life / q.max); ctx.globalAlpha = a; ctx.fillStyle = q.color;
+    if (q.k === 's') { starPath(q.x, q.y, q.r * (0.5 + 0.5 * a), q.rot); ctx.fill(); }
+    else if (q.k === 'k') { starPath(q.x, q.y, q.r * a, q.rot, 4, 0.18); ctx.fill(); }
+    else if (q.k === 'f') { ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(q.rot); ctx.fillRect(-q.r, -q.r * 0.5, q.r * 2, q.r); ctx.restore(); }
+    else circle(q.x, q.y, q.r * (0.4 + 0.6 * a));
+  }
+  ctx.globalAlpha = 1;
+  p.drawChainFx();
+
+  // フラッシュ
+  if (p.flashA > 0.01) { ctx.fillStyle = hexA(p.flashC, p.flashA); ctx.fillRect(0, 0, FIELD_W, FIELD_H); }
+
+  // 連鎖・得点ポップ
+  for (const pop of p.pops) {
+    const pr = pop.t / pop.life;
+    const alpha = pr > 0.72 ? (1 - pr) / 0.28 : 1;
+    const sc = 1 + 0.7 * Math.max(0, 1 - pop.t / 9);
+    const size = pop.size * sc;
+    ctx.globalAlpha = Math.max(0, alpha);
+    ctx.font = `900 ${size}px ${FONT}`; ctx.textAlign = 'center';
+    const wd = ctx.measureText(pop.text).width;
+    const jit = pop.chain >= 4 && pop.t < 14 ? (Math.random() - 0.5) * 5 : 0;
+    const x = Math.max(wd / 2 + 4, Math.min(FIELD_W - wd / 2 - 4, pop.x)) + jit, y = pop.y - pr * 28;
+    ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(4, size * 0.2); ctx.strokeStyle = 'rgba(20,10,40,0.9)';
+    ctx.strokeText(pop.text, x, y);
+    ctx.fillStyle = pop.col || (pop.chain === 0 ? '#ffffff' : chainColor(pop.chain));
+    ctx.fillText(pop.text, x, y);
+  }
+  ctx.globalAlpha = 1;
+
+  // 連鎖リザルトカード
+  if (p.card) {
+    const c = p.card, inK = Math.min(1, c.t / 10), outK = c.t > c.life - 14 ? (c.t - (c.life - 14)) / 14 : 0;
+    const yy = 52 - (1 - inK) * 70, shown = Math.round(c.total * Math.min(1, c.t / 36));
+    ctx.save(); ctx.globalAlpha = 1 - outK;
+    rr(12, yy, FIELD_W - 24, 76, 12); ctx.fillStyle = 'rgba(8,10,40,0.88)'; ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = chainColor(c.chain); ctx.stroke();
+    text(`${c.chain}連鎖!`, FIELD_W / 2, yy + 34, 30, chainColor(c.chain), 'center');
+    text('+' + shown.toLocaleString(), FIELD_W / 2, yy + 64, 26, '#ffffff', 'center');
+    ctx.restore();
+  }
+
+  // READY / GO
+  if (game.countdown > 0) {
+    const ready = game.countdown > 60;
+    text(ready ? 'READY' : 'GO!', FIELD_W / 2, FIELD_H / 2 + 14, 52, ready ? '#ffffff' : '#ffe14d', 'center');
+  }
+  // 結果
+  if (p.result) {
+    ctx.fillStyle = p.result === 'win' ? 'rgba(255,220,80,0.12)' : 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, FIELD_W, FIELD_H);
+    const batan = p.result !== 'win' && hasBatan();
+    if (batan) {
+      const bw = FIELD_W * 0.95, bh = bw * batankyuImg.naturalHeight / batankyuImg.naturalWidth, t = game.frame;
+      ctx.drawImage(batankyuImg, (FIELD_W - bw) / 2 + Math.sin(t * 0.3) * 6, FIELD_H * 0.38 + Math.sin(t * 0.06) * FIELD_H * 0.1 - bh / 2, bw, bh);
+    }
+    const msg = p.result === 'win' ? (p.winText || 'WIN!') : p.result === 'draw' ? 'DRAW' : (p.loseText || (p.vs ? 'LOSE' : 'GAME OVER'));
+    ctx.lineWidth = 8; ctx.lineJoin = 'round'; ctx.strokeStyle = 'rgba(20,10,40,0.9)';
+    let fs = p.vs ? 58 : 42; ctx.font = `900 ${fs}px ${FONT}`;
+    const mw = ctx.measureText(msg).width; if (mw > FIELD_W - 16) { fs = Math.floor(fs * (FIELD_W - 16) / mw); ctx.font = `900 ${fs}px ${FONT}`; }
+    ctx.textAlign = 'center';
+    const my = batan ? FIELD_H * 0.84 : FIELD_H / 2;
+    ctx.strokeText(msg, FIELD_W / 2, my); ctx.fillStyle = p.result === 'win' ? '#ffe14d' : '#ff7a7a'; ctx.fillText(msg, FIELD_W / 2, my);
+    // 勝者の紙吹雪はパーティクルとして描画済み
+  }
+  ctx.restore();
+}
+
+function drawSide(p) {
+  const bx = p.fx + FIELD_W + 16, bw = 104, cxm = bx + bw / 2;
+  panel(bx, FY, bw, 196);
+  text('NEXT', cxm, FY + 22, 14, '#9fa6e0', 'center');
+  const lim = p.goalDef ? p.goalDef.limit : Infinity;
+  drawPair(cxm, FY + 58, 34, p.seqPos < lim ? p.seq.get(p.seqPos) : null, 1);
+  drawPair(cxm, FY + 140, 26, p.seqPos + 1 < lim ? p.seq.get(p.seqPos + 1) : null, 0.85);
+
+  const by = FY + 212;
+  panel(bx, by, bw, 176);
+  const n = p.chain > 0 ? p.chain : (p.chainShowT > 0 ? p.lastChain : 0);
+  text('連鎖', cxm, by + 24, 14, '#9fa6e0', 'center');
+  if (n > 0) {
+    const pulse = p.chain > 0 ? 1 + 0.12 * Math.sin(game.frame * 0.4) : 1;
+    ctx.save(); ctx.translate(cxm, by + 78); ctx.scale(pulse, pulse);
+    ctx.lineWidth = 6; ctx.lineJoin = 'round'; ctx.strokeStyle = 'rgba(15,10,40,0.9)';
+    ctx.font = `900 58px ${FONT}`; ctx.textAlign = 'center'; ctx.strokeText(String(n), 0, 0);
+    ctx.fillStyle = chainColor(n); ctx.fillText(String(n), 0, 0); ctx.restore();
+    if (p.lastStep) text(`${p.lastStep.cleared} × ${p.lastStep.mult}`, cxm, by + 104, 15, '#d6d9ff', 'center');
+  } else text('—', cxm, by + 78, 40, '#4a4f80', 'center');
+  text('最大連鎖', cxm, by + 134, 12, '#9fa6e0', 'center', false);
+  text(p.maxChain + ' 連鎖', cxm, by + 158, 20, '#ffffff', 'center');
+
+  const iy = by + 190;
+  panel(bx, iy, bw, 112);
+  text('消したぷよ', cxm, iy + 22, 12, '#9fa6e0', 'center', false);
+  text(String(p.totalErased), cxm, iy + 46, 20, '#fff', 'center');
+  if (p.vs) {
+    text('送ったおじゃま', cxm, iy + 70, 12, '#9fa6e0', 'center', false);
+    text(String(p.sentTotal), cxm, iy + 94, 20, '#fff', 'center');
+  } else {
+    text('レベル', cxm, iy + 70, 12, '#9fa6e0', 'center', false);
+    text(String(p.level()), cxm, iy + 94, 20, '#fff', 'center');
+  }
+  if (p.zenkeshi) { ctx.save(); ctx.globalAlpha = 0.75 + 0.25 * Math.sin(game.frame * 0.2); text('全消し', cxm, iy + 128, 14, '#ffe14d', 'center'); text('ボーナス待機', cxm, iy + 146, 11, '#ffe14d', 'center', false); ctx.restore(); }
+}
+
+function drawScore(p) {
+  const x = p.fx, w = FIELD_W, y = FY + FIELD_H + 18;
+  panel(x - 5, y, w + 10, 64);
+  text('SCORE', x + 6, y + 22, 13, '#9fa6e0');
+  const s = String(Math.min(p.score, 99999999)), pad = s.padStart(8, '0');
+  ctx.font = `bold 34px 'Courier New',monospace`; ctx.textAlign = 'right';
+  ctx.fillStyle = '#3a3f70'; ctx.fillText(pad, x + w - 6, y + 54);
+  ctx.fillStyle = '#ffffff'; ctx.fillText(s, x + w - 6, y + 54);
+}
+
+function drawPlayer(p) {
+  ctx.save();
+  if (p.shake > 0 && settings.shake) ctx.translate((Math.random() - 0.5) * p.shake, (Math.random() - 0.5) * p.shake);
+  ctx.textBaseline = 'alphabetic';
+  text(p.label, p.fx, 26, 18, p.color);
+  if (p.showWins) text('WIN ' + game.wins[p.idx], p.fx + FIELD_W, 26, 18, p.color, 'right');
+  drawOjamaBar(p);
+  drawField(p);
+  drawSide(p);
+  drawScore(p);
+  ctx.restore();
+}
+
+// 攻撃カットイン（連鎖中に攻撃側の画面へ）
+function drawCutin(p) {
+  const c = p.cutin; if (!c) return;
+  const left = !p.vs || p.idx === 0;
+  const x0 = p.vs ? (p.idx === 0 ? 0 : 500) : 0, w = p.vs ? 500 : 1000;
+  const tier = c.zen ? 3 : cutTier(c.chain);
+  const bandH = tier === 0 ? 96 : 150, cy = FY + 250, top = cy - bandH / 2;
+  const inK = Math.min(1, c.t / 8), outK = c.t > c.life - 8 ? (c.t - (c.life - 8)) / 8 : 0;
+  const slide = Math.pow(1 - inK, 3) * (left ? -1 : 1) * w * 0.7;
+  const col = c.zen ? '#ffe14d' : chainColor(c.chain);
+  const px = left ? x0 + (w > 600 ? 250 : 112) : x0 + w - 112, tx = left ? x0 + (w > 600 ? 640 : 322) : x0 + w - 322;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x0, top, w, bandH); ctx.clip();
+  ctx.globalAlpha = 1 - outK;
+  const g = ctx.createLinearGradient(0, top, 0, top + bandH);
+  g.addColorStop(0, hexA(col, 0.65)); g.addColorStop(0.5, 'rgba(10,10,44,0.9)'); g.addColorStop(1, hexA(col, 0.65));
+  ctx.fillStyle = g; ctx.fillRect(x0, top, w, bandH);
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';                 // 流れる斜めストライプ
+  for (let i = -2; i < w / 50 + 3; i++) {
+    const sx = x0 + i * 50 + ((c.t * (left ? 7 : -7)) % 50);
+    ctx.beginPath(); ctx.moveTo(sx, top + bandH); ctx.lineTo(sx + 26, top + bandH); ctx.lineTo(sx + 26 + bandH * 0.5, top); ctx.lineTo(sx + bandH * 0.5, top); ctx.closePath(); ctx.fill();
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 2;   // 集中線
+  for (let i = 0; i < 24; i++) {
+    const a = i / 24 * Math.PI * 2 + c.t * 0.02, r0 = 56 + ((i * 37 + c.t * 15) % 90), r1 = r0 + 50 + ((i * 53) % 80);
+    ctx.beginPath(); ctx.moveTo(px + slide + Math.cos(a) * r0, cy + Math.sin(a) * r0 * 0.6); ctx.lineTo(px + slide + Math.cos(a) * r1, cy + Math.sin(a) * r1 * 0.6); ctx.stroke();
+  }
+  // ぷよ（消した色）がドーン
+  const pop = 1 + 0.3 * Math.max(0, 1 - c.t / 10), bounce = Math.max(0, 1 - c.t / 18) * Math.cos(c.t * 0.9);
+  ctx.save(); ctx.translate(px + slide, cy); ctx.rotate((left ? -1 : 1) * 0.14 + Math.sin(c.t * 0.5) * 0.03 * tier);
+  ctx.scale(1 + 0.3 * bounce, 1 - 0.26 * bounce);                  // ぷにょんと伸び縮み
+  drawPuyo(0, 0, c.color, (bandH * 0.9) * pop, false); ctx.restore();
+  // テキスト
+  const label = c.zen ? 'ぜんけし!!' : `${c.chain}連鎖!`, fs = (c.zen ? 50 : 46) + tier * 8;
+  const jx = c.t < 12 ? (Math.random() - 0.5) * (4 + tier * 2) : 0;
+  ctx.font = `900 ${fs}px ${FONT}`; ctx.textAlign = 'center';
+  const tw = ctx.measureText(label).width;
+  ctx.lineJoin = 'round'; ctx.lineWidth = 10; ctx.strokeStyle = 'rgba(15,5,40,0.95)';
+  const ty = cy + (tier === 0 ? 14 : 4);
+  ctx.strokeText(label, tx + slide * 0.5 + jx, ty);
+  let fill = '#ffffff';
+  if (tier >= 3) { const lg = ctx.createLinearGradient(tx - tw / 2, 0, tx + tw / 2, 0); for (let i = 0; i <= 5; i++) lg.addColorStop(i / 5, hsl2hex((game.frame * 10 + i * 60) % 360)); fill = lg; }
+  else if (tier >= 1) fill = col;
+  ctx.fillStyle = fill; ctx.fillText(label, tx + slide * 0.5 + jx, ty);
+  if (tier >= 1) text(c.zen ? 'ALL CLEAR!' : CUT_TEXT[tier], tx + slide * 0.5, cy + bandH / 2 - 16, 18, '#ffffff', 'center');
+  ctx.restore();
+  ctx.save(); ctx.globalAlpha = 1 - outK; ctx.fillStyle = col;      // 上下のライン
+  ctx.fillRect(x0, top - 3, w, 3); ctx.fillRect(x0, top + bandH, w, 3);
+  ctx.restore();
+}
+
+function drawShots() {
+  for (const s of game.shots) {
+    const col = chainColor(Math.max(2, s.from ? s.from.chain : 2));
+    for (let i = 0; i < s.trail.length; i++) {
+      const [x, y] = s.trail[i], k = (i + 1) / s.trail.length;
+      ctx.globalAlpha = k * 0.65; ctx.fillStyle = col; circle(x, y, (3 + Math.min(11, s.n * 0.6)) * k);
+    }
+    ctx.globalAlpha = 1;
+    ctx.save(); ctx.shadowColor = col; ctx.shadowBlur = 24;
+    drawPuyo(s.x, s.y, OJAMA, 26 + Math.min(22, s.n * 1.4), false);
+    ctx.restore();
+    text('+' + s.n, s.x + 20, s.y - 14, 16, '#ffffff', 'left');
+  }
+  for (const q of game.sparks) { ctx.globalAlpha = q.life / q.max; ctx.fillStyle = q.color; circle(q.x, q.y, q.r * q.life / q.max); }
+  ctx.globalAlpha = 1;
+}
+
+function drawBackground() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#1a1f55'); g.addColorStop(1, '#0a0c24');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  for (const b of game.bubbles) {                       // ゆっくり昇る泡
+    const y = ((b.y - game.frame * b.s) % (H + 40) + H + 40) % (H + 40) - 20, x = b.x + Math.sin(game.frame * 0.01 + b.ph) * 14;
+    ctx.fillStyle = 'rgba(160,180,255,0.08)'; circle(x, y, b.r);
+  }
+  for (const p of game.players) {                       // 連鎖中は攻撃側の後ろが光る
+    if (p.glow < 0.05) continue;
+    const cx = p.fx + FIELD_W / 2, cy = FY + FIELD_H / 2, col = chainColor(p.glowN);
+    const rg = ctx.createRadialGradient(cx, cy, 40, cx, cy, 460);
+    rg.addColorStop(0, hexA(col, 0.34 * p.glow)); rg.addColorStop(1, hexA(col, 0));
+    ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+  }
+}
+
+function menuDetail() {
+  const m = settings.mode;
+  if (m === 'cpu') return ['CPUの強さ', `Lv.${settings.cpuLevel}  ${CPU_LV[settings.cpuLevel].name}`, false];
+  if (m === 'tower') {
+    const f = Math.min(settings.towerFloor, towerMaxSel()), i = towerInfo(f);
+    return ['スタートする階', `${f}F  ${i.type === 'mission' ? 'ミッション' : (i.boss ? 'ボス ' : '') + i.name}　(到達 ${towerBest}F)`, false];
+  }
+  if (m === 'train') { const L = LESSONS[settings.lesson]; return ['レッスン', `${settings.lesson + 1}. ${L.title}${lessonsDone[settings.lesson] ? ' ★' : ''}`, false]; }
+  return ['', '— (このモードでは使いません)', true];
+}
+function drawMenu() {
+  const f = game.frame;
+  const titles = ['ぷ', 'よ', 'ぷ', 'よ'], cols = [1, 2, 3, 4];
+  ctx.lineJoin = 'round';
+  titles.forEach((t, i) => {
+    const x = 330 + i * 110, y = 130 + Math.sin(f * 0.05 + i) * 6;
+    ctx.font = `900 96px ${FONT}`; ctx.textAlign = 'center'; ctx.lineWidth = 12; ctx.strokeStyle = '#10143a'; ctx.strokeText(t, x, y);
+    ctx.fillStyle = PAL[cols[i]].m; ctx.fillText(t, x, y);
+  });
+  text('2P対戦版', 500, 178, 30, '#ffffff', 'center');
+  const pn = padInfo.length ? 'コントローラー  ' + padInfo.map((n, i) => `P${i + 1}: ${n}`).join('    ') : 'コントローラー未接続（有線でつないでボタンを押すと認識します）';
+  text(pn, 500, 206, 14, padInfo.length ? '#8fe8a8' : '#8a91c8', 'center', false);
+
+  const det = menuDetail(), m = settings.mode, free = m === 'tower' || m === 'train';
+  const items = [
+    ['モード', MODE_NAMES[m]],
+    [det[0] || '詳細', det[1]],
+    ['ぷよの色数', free ? '— (自動)' : settings.colors + '色'],
+    ['落下スピード', m === 'train' ? '— (固定)' : ['ゆっくり', 'ふつう', 'はやい'][settings.speed]],
+    ['オプション', '回転モーション・演出・音・ボイスなど ▶'],
+    ['キー設定', '1P・2Pのキーを変更する ▶'],
+    ['', 'スタート (Enter / Space)'],
+  ];
+  const bx = 200, bw = 600, y0 = 232;
+  items.forEach((it, i) => {
+    const y = y0 + i * 42, sel = game.sel === i, dim = (i === 1 && det[2]) || (i === 2 && free) || (i === 3 && m === 'train');
+    rr(bx, y, bw, 34, 10);
+    ctx.fillStyle = sel ? 'rgba(120,140,255,0.35)' : 'rgba(10,12,40,0.6)'; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = sel ? '#aab6ff' : 'rgba(150,160,255,0.25)'; ctx.stroke();
+    if (i === 6) text(it[1], bx + bw / 2, y + 25, 20, sel ? '#ffe14d' : '#fff', 'center');
+    else {
+      text(it[0], bx + 20, y + 24, 17, dim ? '#6a70a0' : '#b8beee');
+      const arrow = sel && i < 4 && !dim;
+      text((arrow ? '◀ ' : '') + it[1] + (arrow ? ' ▶' : ''), bx + bw - 20, y + 24, 17, dim ? '#6a70a0' : '#ffffff', 'right');
+    }
+  });
+  const desc = {
+    vs: '2人で対戦。連鎖でおじゃまぷよを送り合おう',
+    cpu: 'CPUと対戦。強さは5段階',
+    tower: '20階のタワーに挑戦!  3の倍数の階はミッション、5階ごとにボス戦。クリアした階は保存されます',
+    train: '連鎖のコツを課題形式で練習。Hキーで置く場所のヒントを表示',
+    solo: 'ひとりでスコアアタック。時間がたつほど落下が速くなります',
+  }[m];
+  text(desc, 500, 548, 15, '#ffd9a0', 'center', false);
+  const lines = [
+    '【1P】 ' + bindText(0),
+    '【2P】 ' + bindText(1),
+    'パッド(Switch Proコン/PS4・PS5など): 十字キー・スティック移動 / A・X・○・△・R=右回転 / B・Y・✕・□・L=左回転 / +・Options=ポーズ',
+    'P / Esc: ポーズ   M: 効果音   V: ボイス   H: ヒント(特訓)   ※ひとり用・CPU戦は1P・2Pどちらのキーでも操作できます',
+    '4つ以上つなげて消す → 連鎖で高得点 → おじゃまを送って攻撃(70点で1個) / 自分の連鎖で相殺 / 全消しで30個',
+  ];
+  lines.forEach((l, i) => text(l, 500, 586 + i * 22, 13, i === 4 ? '#ffd9a0' : '#b8beee', 'center', false));
+  for (let i = 0; i < 14; i++) {
+    const c = 1 + (i % 5), x = 50 + i * 68, y = 724 + Math.sin(f * 0.06 + i * 0.9) * 8;
+    drawPuyo(x, y, c, 40, false);
+  }
+}
+function drawOpts() {
+  text('オプション', 500, 60, 40, '#ffffff', 'center');
+  const bar = n => '■'.repeat(n) + '□'.repeat(10 - n) + '  ' + n;
+  const onoff = v => v ? 'ON' : 'OFF';
+  const rows = [
+    ['回転モーション', ['なし (すぐ切り替え)', 'なめらか', 'バネ (ぷるん)'][settings.rotAnim]],
+    ['連鎖演出の量', ['控えめ', 'ふつう', '派手'][settings.fx]],
+    ['画面のゆれ', onoff(settings.shake)],
+    ['コントローラー振動', onoff(settings.rumble)],
+    ['横移動の速さ', ['ゆっくり', 'ふつう', 'はやい'][settings.das]],
+    ['高速落下の速さ', ['ゆっくり', 'ふつう', 'はやい'][settings.soft]],
+    ['着地ガイド', settings.guide ? 'あり' : 'なし'],
+    ['効果音', onoff(settings.sound)],
+    ['音量', bar(settings.vol)],
+    ['ボイス', onoff(settings.voice)],
+    ['おじゃまぷよの大きさ', Math.round(settings.ojScale * 100) + '%' + (settings.ojScale === 1 ? ' (標準)' : '')],
+    ['', 'もどる (Esc)'],
+  ];
+  const bx = 200, bw = 600, y0 = 86;
+  rows.forEach((it, i) => {
+    const y = y0 + i * 36, sel = game.optSel === i;
+    rr(bx, y, bw, 30, 9); ctx.fillStyle = sel ? 'rgba(120,140,255,0.35)' : 'rgba(10,12,40,0.6)'; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = sel ? '#aab6ff' : 'rgba(150,160,255,0.25)'; ctx.stroke();
+    if (i === OPT_N - 1) { text(it[1], bx + bw / 2, y + 22, 18, sel ? '#ffe14d' : '#fff', 'center'); return; }
+    text(it[0], bx + 20, y + 21, 16, '#b8beee');
+    const arrow = sel;
+    text((arrow ? '◀ ' : '') + it[1] + (arrow ? ' ▶' : ''), bx + bw - 20, y + 21, 16, '#ffffff', 'right');
+  });
+  wrapLines(OPT_DESC[game.optSel], 14, 760).forEach((l, i) => text(l, 500, 540 + i * 20, 14, '#ffd9a0', 'center', false));
+  // 確認エリア: 回転モーション / おじゃまの大きさ
+  const by = 584, bh = 170;
+  panel(200, by, 290, bh); panel(510, by, 290, bh);
+  text('回転モーションの確認', 345, by + 24, 14, '#9fa6e0', 'center');
+  text('おじゃまぷよの大きさの確認', 655, by + 24, 14, '#9fa6e0', 'center');
+  const d = game.demo;
+  if (d) {
+    ctx.save(); ctx.beginPath(); ctx.rect(200, by + 32, 290, bh - 36); ctx.clip();
+    drawLivePair(345, by + 100, d, 46, 0, false);
+    ctx.restore();
+  }
+  [1, 2, 6, 3, 6].forEach((c, i) => {
+    const x = 540 + i * 56, y = by + 100;
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.strokeRect(x - 26, y - 26, 52, 52);
+    drawPuyo(x, y, c, 52, false);
+  });
+  text('白い枠(1マス)に対して、ぷよとおじゃまが同じ大きさに見えればOK', 655, by + 150, 11, '#8a91c8', 'center', false);
+}
+
+function drawKeys() {
+  text('キー設定', 500, 74, 44, '#ffffff', 'center');
+  text('項目を選んで Enter → 割り当てたいキーを押す　(Esc でキャンセル)　取り合いになったキーは自動で入れ替わります', 500, 106, 15, '#b8beee', 'center', false);
+  for (let pi = 0; pi < 2; pi++) {
+    const x = pi === 0 ? 60 : 520, w = 420;
+    text(pi === 0 ? 'PLAYER 1' : 'PLAYER 2', x + w / 2, 150, 22, pi === 0 ? '#ff7f8f' : '#6fc6ff', 'center');
+    ACTS.forEach((a, i) => {
+      const idx = pi * 5 + i, y = 164 + i * 50, sel = game.keySel === idx;
+      rr(x, y, w, 40, 10); ctx.fillStyle = sel ? 'rgba(120,140,255,0.38)' : 'rgba(10,12,40,0.6)'; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = sel ? '#aab6ff' : 'rgba(150,160,255,0.25)'; ctx.stroke();
+      text(ACT_LABEL[a], x + 18, y + 27, 19, '#b8beee');
+      const waiting = sel && game.bindWait;
+      text(waiting ? 'キーを押してください…' : bindStr(pi, a), x + w - 18, y + 27, 20, waiting ? '#ffe14d' : '#ffffff', 'right');
+    });
+  }
+  const btns = ['1Pと2Pのキーを入れ替える', '初期設定に戻す', '戻る (Esc)'];
+  btns.forEach((b, i) => {
+    const idx = 10 + i, y = 440 + i * 52, sel = game.keySel === idx;
+    rr(300, y, 400, 42, 10); ctx.fillStyle = sel ? 'rgba(120,140,255,0.38)' : 'rgba(10,12,40,0.6)'; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = sel ? '#aab6ff' : 'rgba(150,160,255,0.25)'; ctx.stroke();
+    text(b, 500, y + 28, 20, sel ? '#ffe14d' : '#ffffff', 'center');
+  });
+  text('↑↓: 項目選択　←→: 1P/2Pの切り替え　設定はこのブラウザに自動保存されます', 500, 640, 15, '#8a91c8', 'center', false);
+  text('※ P・M・Esc・Enter・Space・Backspace・Tab は使えません', 500, 666, 14, '#8a91c8', 'center', false);
+  text('※ ひとり用は1P・2P両方のキーで操作できます', 500, 690, 14, '#8a91c8', 'center', false);
+}
+
+function drawToast() {
+  if (game.frame >= padToast.until || !padToast.text) return;
+  ctx.font = `bold 16px ${FONT}`;
+  const w = ctx.measureText(padToast.text).width + 36;
+  rr(500 - w / 2, 8, w, 32, 16); ctx.fillStyle = 'rgba(20,30,70,0.92)'; ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = '#8fe8a8'; ctx.stroke();
+  text(padToast.text, 500, 30, 16, '#d8ffe6', 'center');
+}
+
+function render() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  drawBackground();
+  if (game.scene === 'menu') { drawMenu(); drawToast(); return; }
+  if (game.scene === 'keys') { drawKeys(); drawToast(); return; }
+  if (game.scene === 'opts') { drawOpts(); drawToast(); return; }
+
+  ctx.save();
+  if (game.shake > 0 && settings.shake) ctx.translate((Math.random() - 0.5) * game.shake * 1.4, (Math.random() - 0.5) * game.shake * 1.4);
+  game.players.forEach(drawInfoPanel);
+  game.players.forEach(drawPlayer);
+  drawShots();
+  game.players.forEach(drawCutin);
+  for (const sh of game.shock) {                                  // 10連鎖〜: 画面全体の衝撃波
+    const k = sh.t / sh.life, e = 1 - Math.pow(1 - k, 3);
+    ctx.globalAlpha = (1 - k) * 0.8; ctx.strokeStyle = sh.color; ctx.lineWidth = 14 * (1 - k) + 2;
+    ctx.beginPath(); ctx.arc(sh.x, sh.y, 30 + e * 700, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 4 * (1 - k); ctx.beginPath(); ctx.arc(sh.x, sh.y, 10 + e * 640, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  if (game.flash > 0.01) { ctx.fillStyle = `rgba(255,255,255,${game.flash})`; ctx.fillRect(0, 0, W, H); }
+
+  if (game.players.length === 2) {
+    const ti = game.towerInfo;
+    if (ti) {
+      text('TOWER', 500, 318, 15, '#9fa6e0', 'center'); text(ti.f + 'F', 500, 366, 44, ti.boss ? '#ff9a4a' : '#ffffff', 'center');
+      if (ti.boss) text('BOSS', 500, 392, 16, '#ff9a4a', 'center');
+    } else {
+      text('VS', 500, 330, 44, '#ffffff', 'center');
+      text(`${game.wins[0]} - ${game.wins[1]}`, 500, 372, 26, '#b8beee', 'center');
+    }
+  }
+  drawSplash();
+  let hint = settings.mode !== 'vs'
+    ? `${bindText(0)}　(1P・2P両方のキーで操作可)　P: ポーズ　M: 音　V: ボイス${game.lesson ? '　H: ヒント' : ''}`
+    : `1P: ${bindStr(0, 'left')}${bindStr(0, 'right')}${bindStr(0, 'down')} / 回転 ${bindStr(0, 'cw')}・${bindStr(0, 'ccw')}　2P: ${bindStr(1, 'left')}${bindStr(1, 'right')}${bindStr(1, 'down')} / 回転 ${bindStr(1, 'cw')}・${bindStr(1, 'ccw')}　P: ポーズ　M: 音`;
+  if (game.over) hint = overHint();
+  text(hint, 500, 764, 14, game.over ? '#ffe14d' : '#8a91c8', 'center', game.over);
+  if (game.paused) {
+    ctx.fillStyle = 'rgba(0,0,10,0.72)'; ctx.fillRect(0, 0, W, H);
+    text('PAUSE', 500, 360, 72, '#ffffff', 'center');
+    text('P / Esc / パッドの+: 再開　　Backspace / パッドの−: メニューへ戻る', 500, 410, 22, '#b8beee', 'center', false);
+  }
+  drawToast();
+}
+
+// ---------------------------------------------------------------------
+//  メインループ (固定60fpsで更新)
+// ---------------------------------------------------------------------
+let last = performance.now(), acc = 0;
+const DT = 1000 / 60;
+function frameLoop(now) {
+  acc += Math.min(100, now - last); last = now;
+  while (acc >= DT) { step(); acc -= DT; }
+  render();
+  requestAnimationFrame(frameLoop);
+}
+requestAnimationFrame(frameLoop);
+</script>
+</body>
+</html>
