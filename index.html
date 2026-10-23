@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>ぷよぷよ 2P対戦版</title>
+<title>ぽにょんぽにょん 2P対戦版</title>
 <style>
   html,body{margin:0;height:100%;background:#080a18;overflow:hidden;touch-action:none;}
   body{display:flex;align-items:center;justify-content:center}
@@ -15,8 +15,7 @@
 <script>
 'use strict';
 // =====================================================================
-//  ぷよぷよ風 2P対戦 v3 (スマホ最適化版)
-//   - 偏りなしのぷよ配列(バッグ方式) / キー設定 / 派手な連鎖演出
+//  ぽにょんぽにょん 2P対戦版
 // =====================================================================
 const cv = document.getElementById('c');
 const ctx = cv.getContext('2d');
@@ -24,21 +23,21 @@ const W = 1000, H = 772;
 const DPR = Math.min(2, window.devicePixelRatio || 1);
 cv.width = W * DPR; cv.height = H * DPR;
 
-const CS = 40, COLS = 6, ROWS = 13;          // 行0は「13段目」(見えない段)、行1〜12が表示段
+const CS = 40, COLS = 6, ROWS = 13;          // 行0は見えない段、1〜12が表示段
 const FIELD_W = COLS * CS, FIELD_H = ROWS * CS, FY = 84;
 const FONT = "'Hiragino Kaku Gothic ProN','Yu Gothic','Meiryo',sans-serif";
-const OFFS = [[0, -1], [1, 0], [0, 1], [-1, 0]];   // 子ぷよの向き: 上,右,下,左
+const OFFS = [[0, -1], [1, 0], [0, 1], [-1, 0]];   // 上,右,下,左
 const OJAMA = 6;
 
-// 本家のスコア表
+// 得点計算パラメータ
 const CHAIN_POWER = [0, 8, 16, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480, 512, 544, 576, 608, 640, 672];
 const CONNECT = [0, 0, 0, 0, 0, 2, 3, 4, 5, 6, 7, 10];
 const COLOR_BONUS = [0, 3, 6, 12, 24];
 const OJAMA_RATE = 70;
 
-// 操作系パラメータ
-const DAS = 11, ARR = 3, SOFT = 0.5, LOCK = 30, GROUND_MAX = 100;
-const ERASE_BASE = 26, ERASE_T = 44;      // 消去演出: 点滅→ふくらむ→順番にはじける
+// 操作パラメータ（高速落下の行き過ぎを抑止するためSOFTのスピードを微調整）
+const DAS = 11, ARR = 3, SOFT = 0.25, LOCK = 30, GROUND_MAX = 100;
+const ERASE_BASE = 26, ERASE_T = 44;
 
 const PAL = {
   1: { m: '#ff4a55', l: '#ffa0a6', d: '#b3162a' },
@@ -49,7 +48,7 @@ const PAL = {
   6: { m: '#c9ccd8', l: '#f4f5fa', d: '#7b7f92' },
 };
 
-// ---- 画像 (img フォルダ。無ければ自動で描画に切り替え) ----
+// 画像設定
 const SPRITE_FILES = { 1: 'img/puyo_1.png', 2: 'img/puyo_2.png', 3: 'img/puyo_3.png', 4: 'img/puyo_4.png', 5: 'img/puyo_5.png', 6: 'img/ojamapuyo_1.png' };
 const sprites = {};
 for (const k in SPRITE_FILES) { const im = new Image(); im.src = SPRITE_FILES[k]; sprites[k] = im; }
@@ -61,14 +60,13 @@ const ojImgs = {};
 for (const k in OJ_FILES) { const im = new Image(); im.src = OJ_FILES[k]; ojImgs[k] = im; }
 const hasOj = k => { const im = ojImgs[k]; return !!(im && im.complete && im.naturalWidth > 0); };
 
-// ---- 設定（このブラウザに自動保存）----
-const SETTINGS_KEY = 'puyo_settings_v1';
-const MODES = ['vs', 'cpu', 'tower', 'train', 'solo'];
-const MODE_NAMES = { vs: 'ふたりで対戦', cpu: 'CPUと対戦', tower: 'タワー (20階)', train: '技術特訓 (レッスン)', solo: 'ひとりで練習 (スコアアタック)' };
+// 設定保存
+const SETTINGS_KEY = 'ponyon_settings_v1';
+const MODES = ['vs', 'cpu', 'solo'];
+const MODE_NAMES = { vs: 'ふたりで対戦', cpu: 'CPUと対戦', solo: 'ひとりでスコアアタック' };
 const settings = {
   mode: 'vs', cpuLevel: 2, colors: 4, speed: 1, guide: true, sound: true,
-  voice: true, vol: 7, ojScale: 1, rotAnim: 2, fx: 1, shake: true, rumble: true, das: 1, soft: 1,
-  towerFloor: 1, lesson: 0, hint: true,
+  voice: true, vol: 7, ojScale: 1, rotAnim: 2, fx: 1, shake: true, rumble: true, das: 1, soft: 1
 };
 function loadSettings() {
   try {
@@ -78,17 +76,15 @@ function loadSettings() {
   if (!MODES.includes(settings.mode)) settings.mode = 'vs';
   const cl = (k, a, b) => { settings[k] = Math.max(a, Math.min(b, Math.round(settings[k] * 100) / 100)); };
   cl('cpuLevel', 1, 5); cl('colors', 3, 5); cl('speed', 0, 2); cl('vol', 0, 10); cl('ojScale', 0.5, 1.5);
-  cl('rotAnim', 0, 2); cl('fx', 0, 2); cl('das', 0, 2); cl('soft', 0, 2); cl('towerFloor', 1, 20); cl('lesson', 0, 7);
+  cl('rotAnim', 0, 2); cl('fx', 0, 2); cl('das', 0, 2); cl('soft', 0, 2);
 }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { } }
 loadSettings();
 const FXK = () => [0.35, 1, 1.6][settings.fx];
 const DAS_T = [[14, 4], [11, 3], [8, 2]];
-const SOFT_T = [0.32, 0.5, 0.8];
+const SOFT_T = [0.18, 0.28, 0.42]; // スティックを倒し続けた際にも制御しやすい落下の早さに修正
 
-// ---------------------------------------------------------------------
-//  サウンド (WebAudio・外部ファイルなし)
-// ---------------------------------------------------------------------
+// サウンド機能
 let actx = null, master = null;
 function applyVol() { if (master) master.gain.value = settings.vol / 7; }
 function ensureAudio() {
@@ -153,20 +149,10 @@ const sfx = {
   count() { tone(660, 0.12, 'square', 0.05); },
   ready() { tone(660, 0.12, 'square', 0.05); },
   go() { tone(1320, 0.4, 'square', 0.05); tone(1980, 0.35, 'triangle', 0.04, 0, 0.05); },
-  clear() { [784, 988, 1175, 1568].forEach((f, i) => { tone(f, 0.2, 'triangle', 0.08, 0, i * 0.08); tone(f / 2, 0.2, 'square', 0.02, 0, i * 0.08); }); },
 };
 
-let voiceFiles = null;
-(function voiceProbe() {
-  try {
-    const a = new Audio(); a.preload = 'auto';
-    a.addEventListener('canplaythrough', () => { voiceFiles = true; }, { once: true });
-    a.addEventListener('error', () => { voiceFiles = false; }, { once: true });
-    a.src = 'voice/chain_2.mp3';
-  } catch (e) { voiceFiles = false; }
-})();
 let jaVoice = null;
-function pickVoice() { try { jaVoice = speechSynthesis.getVoices().find(v => /^ja/i.test(v.lang)) || null; } catch (e) { jaVoice = null; } }
+function pickVoice() { try { jaVoice = speechSynthesis.getVoices().find(v => /^ja/i.test(v.lang)) || null; } catch (e) { } }
 try { if (window.speechSynthesis) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; } } catch (e) { }
 function speakTTS(txt, pitch, rate, vol) {
   try {
@@ -179,14 +165,6 @@ function speakTTS(txt, pitch, rate, vol) {
 }
 function speak(key, txt, pitch = 1, rate = 1.1, vol = 1) {
   if (!settings.voice || !settings.sound || settings.vol <= 0) return;
-  if (key && voiceFiles) {
-    try {
-      const a = new Audio('voice/' + key + '.mp3'); a.volume = Math.max(0, Math.min(1, vol * settings.vol / 7));
-      a.addEventListener('error', () => speakTTS(txt, pitch, rate, vol), { once: true });
-      const pr = a.play(); if (pr && pr.catch) pr.catch(() => {});
-      return;
-    } catch (e) { }
-  }
   speakTTS(txt, pitch, rate, vol);
 }
 const KANA_N = ['', 'いち', 'に', 'さん', 'よん', 'ご', 'ろく', 'なな', 'はち', 'きゅう', 'じゅう'];
@@ -196,7 +174,7 @@ function voiceChain(p, n) {
   if (n < 2) return;
   const base = (n <= 10 ? KANA_N[n] : String(n)) + 'れんさ！';
   const tail = n >= 10 ? 'ちょうすごーい！' : n >= 7 ? 'すごーい！' : n >= 4 ? 'ナイス！' : '';
-  speak('chain_' + Math.min(n, 19), base + tail, voicePitch(p) + Math.min(0.3, n * 0.03), 1.05 + Math.min(0.45, n * 0.04));
+  speak(null, base + tail, voicePitch(p) + Math.min(0.3, n * 0.03), 1.05 + Math.min(0.45, n * 0.04));
 }
 
 function mulberry32(a) {
@@ -239,7 +217,7 @@ const DEFAULT_BINDS = [
   { left: ['KeyA'], right: ['KeyD'], down: ['KeyS'], cw: ['KeyW', 'KeyE'], ccw: ['KeyQ'] },
 ];
 const cloneBinds = b => JSON.parse(JSON.stringify(b));
-const BIND_KEY = 'puyo_binds_v3';
+const BIND_KEY = 'ponyon_binds_v1';
 function loadBinds() {
   try {
     const j = JSON.parse(localStorage.getItem(BIND_KEY));
@@ -255,18 +233,16 @@ function rebuildKeymap() {
   binds.forEach((b, pi) => { for (const a of ACTS) for (const c of b[a]) KEYMAP[c] = [pi, a]; });
 }
 rebuildKeymap();
-const RESERVED = ['Escape', 'KeyP', 'KeyM', 'KeyH', 'KeyV', 'Enter', 'Space', 'Backspace', 'Tab'];
-const KEYNAMES = { ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓', Comma: ',', Period: '.', Slash: '/', Semicolon: ';', Quote: "'", BracketLeft: '[', BracketRight: ']', Backslash: '\\', Minus: '-', Equal: '=', Backquote: '`', ShiftLeft: '左Shift', ShiftRight: '右Shift', ControlLeft: '左Ctrl', ControlRight: '右Ctrl', AltLeft: '左Alt', AltRight: '右Alt', IntlYen: '¥', IntlRo: '＼' };
+const RESERVED = ['Escape', 'KeyP', 'KeyM', 'KeyV', 'Enter', 'Space', 'Backspace', 'Tab'];
+const KEYNAMES = { ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓' };
 function keyName(c) {
   if (KEYNAMES[c]) return KEYNAMES[c];
   if (/^Key[A-Z]$/.test(c)) return c.slice(3);
-  if (/^Digit\d$/.test(c)) return c.slice(5);
-  if (/^Numpad/.test(c)) return 'テンキー' + c.slice(6);
   return c;
 }
 const bindStr = (pi, a) => binds[pi][a].map(keyName).join('・');
 function bindText(pi) {
-  return `${bindStr(pi, 'left')} ${bindStr(pi, 'right')} 移動 / ${bindStr(pi, 'down')} 高速落下 / ${bindStr(pi, 'cw')} 右回転 / ${bindStr(pi, 'ccw')} 左回転`;
+  return `${bindStr(pi, 'left')}${bindStr(pi, 'right')}移動 / ${bindStr(pi, 'down')}落下 / ${bindStr(pi, 'cw')}右回転 / ${bindStr(pi, 'ccw')}左回転`;
 }
 const KEY_ROWS = []; for (let pi = 0; pi < 2; pi++) for (const a of ACTS) KEY_ROWS.push([pi, a]);
 const KEY_N = KEY_ROWS.length + 3;
@@ -280,7 +256,7 @@ const padToast = { text: '', until: 0 };
 
 const game = {
   scene: 'menu', players: [], over: false, paused: false, countdown: 0, frame: 0, wins: [0, 0], sel: 0,
-  keySel: 0, bindWait: false, shots: [], sparks: [], flash: 0, shake: 0, overT: 0, shock: [], optSel: 0, demo: null, floor: 1, lessonIdx: 0, towerInfo: null, lesson: null,
+  keySel: 0, bindWait: false, shots: [], sparks: [], flash: 0, shake: 0, overT: 0, shock: [], optSel: 0, demo: null,
   bubbles: Array.from({ length: 36 }, (_, i) => ({ x: (i * 97) % W, y: (i * 211) % H, r: 3 + (i % 5) * 2, s: 0.2 + (i % 7) * 0.08, ph: i })),
 };
 function toast(msg) { padToast.text = msg; padToast.until = game.frame + 240; }
@@ -298,7 +274,6 @@ window.addEventListener('keydown', e => {
   if (e.code === 'KeyM') { if (!e.repeat) { settings.sound = !settings.sound; saveSettings(); } return; }
   if (e.code === 'KeyV') { if (!e.repeat) { settings.voice = !settings.voice; saveSettings(); toast('ボイス ' + (settings.voice ? 'ON' : 'OFF')); if (settings.voice) speak(null, 'ボイス、オン！', 1.2, 1.1); } return; }
   if (game.scene === 'menu') { menuKey(e); return; }
-  if (e.code === 'KeyH') { if (!e.repeat) { settings.hint = !settings.hint; saveSettings(); toast('ヒント ' + (settings.hint ? 'ON' : 'OFF')); } return; }
   if (e.code === 'KeyP' || e.code === 'Escape') { if (!e.repeat && !game.over) game.paused = !game.paused; return; }
   if (game.paused) { if (e.code === 'Backspace') toMenu(); return; }
   if (game.over) {
@@ -320,8 +295,7 @@ window.addEventListener('keyup', e => {
 window.addEventListener('blur', () => { kb.forEach(k => { k.left = k.right = k.down = false; }); if (game.scene === 'play' && !game.over) game.paused = true; });
 document.addEventListener('visibilitychange', () => { if (document.hidden && game.scene === 'play' && !game.over) game.paused = true; });
 
-const MENU_N = 7;
-function towerMaxSel() { return Math.min(TOWER_MAX, towerBest + 1); }
+const MENU_N = 6;
 function menuKey(e) {
   if (e.code === 'ArrowUp') { game.sel = (game.sel + MENU_N - 1) % MENU_N; sfx.cursor(); }
   else if (e.code === 'ArrowDown') { game.sel = (game.sel + 1) % MENU_N; sfx.cursor(); }
@@ -329,41 +303,21 @@ function menuKey(e) {
   else if (e.code === 'ArrowRight') menuChange(1);
   else if ((e.code === 'Enter' || e.code === 'Space') && !e.repeat) {
     sfx.select();
-    if (game.sel === 4) openOpts(); else if (game.sel === 5) openKeys(); else startGame(true);
+    if (game.sel === 3) openOpts(); else if (game.sel === 4) openKeys(); else startGame(true);
   }
 }
 function menuChange(d) {
   const m = settings.mode;
   switch (game.sel) {
     case 0: settings.mode = MODES[(MODES.indexOf(m) + d + MODES.length) % MODES.length]; break;
-    case 1:
-      if (m === 'cpu') settings.cpuLevel = 1 + ((settings.cpuLevel - 1 + d + 5) % 5);
-      else if (m === 'tower') { const mx = towerMaxSel(); settings.towerFloor = 1 + ((Math.min(settings.towerFloor, mx) - 1 + d + mx) % mx); }
-      else if (m === 'train') settings.lesson = (settings.lesson + d + LESSONS.length) % LESSONS.length;
-      else return;
-      break;
-    case 2: settings.colors = 3 + ((settings.colors - 3 + d + 3) % 3); break;
-    case 3: settings.speed = (settings.speed + d + 3) % 3; break;
+    case 1: if (m === 'cpu') settings.cpuLevel = 1 + ((settings.cpuLevel - 1 + d + 5) % 5); else settings.colors = 3 + ((settings.colors - 3 + d + 3) % 3); break;
+    case 2: settings.speed = (settings.speed + d + 3) % 3; break;
     default: return;
   }
   sfx.cursor(); saveSettings();
 }
 
-const OPT_N = 12;
-const OPT_DESC = [
-  '回すときの動き。バネ=ぷよぷよ風にぷるんと弾む / なめらか=すっと回る / なし=一瞬で切り替わる',
-  '連鎖アニメ・火花・フラッシュの量。重いと感じたら「控えめ」へ',
-  '連鎖のときの画面のゆれ。酔いやすい人はOFFがおすすめ',
-  '対応コントローラーの振動（ブラウザが対応している場合のみ）',
-  '←→を押し続けたときの横移動の速さ',
-  '↓を押したときの落下の速さ',
-  'ぷよが落ちる場所に点線の丸を表示する',
-  '効果音のON/OFF  (Mキーでも切り替え)',
-  '全体の音量  (←で小さく・→で大きく)',
-  '連鎖や全消しの掛け声（ブラウザの音声合成。voice/フォルダに mp3 を置けばそちらを再生） Vキーでも切替',
-  '盤面に降るおじゃまぷよの大きさ。ふつうは自動でまわりと同じ大きさにそろえます。ずれて見えるときだけ調整',
-  'メニューへもどる (Esc)',
-];
+const OPT_N = 10;
 function openOpts() { game.scene = 'opts'; game.optSel = 0; game.demo = { x: 0, vx: 0, rot: 0, ang: 0, angV: 0, c1: 1, c2: 3, pulse: 0, trail: [], visY: 0, t: 0 }; }
 function closeOpts() { game.scene = 'menu'; saveSettings(); }
 function optsKey(e) {
@@ -385,8 +339,6 @@ function optsChange(d) {
     case 6: settings.guide = !settings.guide; break;
     case 7: settings.sound = !settings.sound; break;
     case 8: settings.vol = Math.max(0, Math.min(10, settings.vol + d)); applyVol(); break;
-    case 9: settings.voice = !settings.voice; if (settings.voice) speak(null, 'ボイス、オン！', 1.2, 1.1); break;
-    case 10: settings.ojScale = Math.max(0.5, Math.min(1.5, Math.round((settings.ojScale + d * 0.05) * 100) / 100)); break;
     default: return;
   }
   sfx.cursor(); saveSettings();
@@ -429,22 +381,12 @@ function padShortName(id) {
 function readPad(gp) {
   const id = String(gp.id || '').toLowerCase();
   const std = gp.mapping === 'standard';
-  const nin = id.includes('057e') || id.includes('pro controller') || id.includes('switch');
-  const ps = id.includes('054c') || id.includes('dualshock') || id.includes('dualsense') || id.includes('wireless controller');
   const b = n => !!(gp.buttons[n] && gp.buttons[n].pressed);
   const ax = n => gp.axes[n] || 0;
   let left = ax(0) < -0.5, right = ax(0) > 0.5, up = ax(1) < -0.5, down = ax(1) > 0.5;
   let dl = false, dr = false, du = false, dd = false;
   if (std || gp.buttons.length >= 16) { du = b(12); dd = b(13); dl = b(14); dr = b(15); }
-  if (!dl && !dr && !du && !dd && gp.axes.length > 9) {
-    const h = ax(9);
-    if (Math.abs(h) <= 1.05) {
-      const k = Math.round((h + 1) * 3.5);
-      du = k === 0 || k === 1 || k === 7; dr = k >= 1 && k <= 3; dd = k >= 3 && k <= 5; dl = k >= 5 && k <= 7;
-    }
-  }
   let cwB = [1, 3], ccwB = [0, 2];
-  if (!std) { if (nin) { cwB = [1, 2]; ccwB = [0, 3]; } else if (ps) { cwB = [2, 3]; ccwB = [1, 0]; } }
   const face = cwB.some(b), faceCcw = ccwB.some(b);
   return {
     left: left || dl, right: right || dr, up: up || du, down: down || dd,
@@ -527,47 +469,6 @@ function chainColor(n) {
 const CUT_TEXT = ['いい感じ!', 'ナイスチェイン!', 'すごい連鎖!!', '大連鎖!!!', '超連鎖!!!!'];
 const cutTier = n => n >= 10 ? 4 : n >= 8 ? 3 : n >= 6 ? 2 : n >= 4 ? 1 : 0;
 
-const TOWER_MAX = 20;
-const TOWER_KEY = 'puyo_tower_v1', LESSON_KEY = 'puyo_lessons_v1';
-let towerBest = 0, lessonsDone = [];
-try { towerBest = Math.max(0, Math.min(TOWER_MAX, parseInt(localStorage.getItem(TOWER_KEY) || '0', 10) || 0)); } catch (e) { towerBest = 0; }
-try { lessonsDone = JSON.parse(localStorage.getItem(LESSON_KEY) || '[]'); if (!Array.isArray(lessonsDone)) lessonsDone = []; } catch (e) { lessonsDone = []; }
-function saveProgress() {
-  try { localStorage.setItem(TOWER_KEY, String(towerBest)); localStorage.setItem(LESSON_KEY, JSON.stringify(lessonsDone)); } catch (e) { }
-}
-const TOWER_NAMES = ['ひよっこ', 'ぷよ見習い', 'わくわく', 'ころころ', 'ぷよ番長', 'ふわふわ', 'きらきら', 'どきどき', 'ぐるぐる', 'ぷよ将軍',
-  'ひらめき', 'ずんずん', 'ばくばく', 'ぎらぎら', 'ぷよ大魔王', 'しんしん', 'めらめら', 'ごろごろ', 'ぴかぴか', 'ぷよ神'];
-function towerInfo(f) {
-  const boss = f % 5 === 0, mission = !boss && f % 3 === 0;
-  if (mission) { const n = 2 + Math.floor(f / 7); return { f, type: 'mission', boss: false, name: 'ミッション', goal: { type: 'chain', n }, limit: 10 + n * 5 }; }
-  return { f, type: 'battle', boss, name: TOWER_NAMES[f - 1], lv: Math.min(5, 1 + Math.floor((f - 1) / 4) + (boss ? 1 : 0)), speed: 1 + (f - 1) * 0.02 + (boss ? 0.15 : 0) };
-}
-const LESSONS = [
-  { title: '基本の4つ消し', desc: '同じ色を4つつなげると消えます。赤が3つ並んでいるので、右はしに赤を置こう。', goal: { type: 'chain', n: 1 },
-    rows: ['111000'], pieces: [[1, 2], [1, 3]], sol: [[3, 0]] },
-  { title: '2連鎖', desc: '赤を消すと、上の緑が落ちてきて、緑のかたまりとつながります。', goal: { type: 'chain', n: 2 },
-    rows: ['210000', '210000', '210000', '020000'], pieces: [[1, 4], [3, 4]], sol: [[2, 0]] },
-  { title: '3連鎖 (階段積み)', desc: '階段の形に積むと、1つ消すだけで次々に連鎖します。いちばん右に赤を置こう。', goal: { type: 'chain', n: 3 },
-    rows: ['321000', '321000', '321000', '032000'], pieces: [[1, 4], [1, 4]], sol: [[3, 0]] },
-  { title: '4連鎖 (階段積み)', desc: '階段が長くなっても考え方は同じ。ひとつ消せば最後まで続きます。', goal: { type: 'chain', n: 4 },
-    rows: ['532100', '532100', '532100', '053200'], pieces: [[1, 4], [1, 4]], sol: [[4, 0]] },
-  { title: '同時消し', desc: '2色を同時に消すと「色数ボーナス」で得点が上がります。', goal: { type: 'colors', n: 2 },
-    rows: ['102000', '102000', '102000'], pieces: [[1, 2], [1, 2]], sol: [[0, 1]] },
-  { title: '連結ボーナス', desc: '一度に多くつなげて消すほど「連結ボーナス」が増えます。5個以上を狙おう。', goal: { type: 'group', n: 5 },
-    rows: ['110110'], pieces: [[1, 3], [1, 3]], sol: [[2, 0]] },
-  { title: '全消し', desc: '盤面のぷよをすべて消すと「ぜんけし」。次の消去でボーナス得点とおじゃま30個!', goal: { type: 'allclear', n: 1 },
-    rows: ['210000', '210000', '210000', '020000'], pieces: [[1, 2], [1, 2]], sol: [[2, 0]] },
-  { title: 'おじゃまを消す', desc: 'おじゃまぷよは、となりのぷよが消えると一緒に消えます。3個まとめて消そう。', goal: { type: 'ojama', n: 3 },
-    rows: ['111066', '066000'], pieces: [[1, 4], [1, 4]], sol: [[3, 0]] },
-];
-function goalText(g) {
-  return { chain: `${g.n}連鎖以上をつくる`, colors: `${g.n}色を同時に消す`, group: `${g.n}個以上つなげて消す`, allclear: '盤面を全部消す (ぜんけし)', ojama: `おじゃまぷよを${g.n}個消す` }[g.type] || '';
-}
-function loadRows(p, rows) {
-  rows.forEach((str, i) => { for (let c = 0; c < COLS; c++) { const v = +str[c] || 0; p.board[ROWS - 1 - i][c] = v; } });
-}
-const fixedSeq = pieces => ({ get: i => pieces[i] || null });
-
 const wrapA = a => Math.atan2(Math.sin(a), Math.cos(a));
 function animPiece(p) {
   const m = settings.rotAnim;
@@ -605,7 +506,6 @@ class Player {
     this.freeze = 0; this.card = null; this.cutin = null; this.chainTotal = 0; this.barFlash = 0;
     this.squash = new Map(); this.winFx = 0; this.cpu = null; this.danger = false;
     this.emitters = []; this.bolts = []; this.waves = []; this.meteors = []; this.later = [];
-    this.goalDef = null; this.goalFlag = null; this.stats = { maxGroup: 0, maxColors: 0, ojama: 0, allClear: false };
     this.speedMul = 1; this.showWins = vs; this.winText = null; this.loseText = null; this.spinCount = 0;
   }
 
@@ -638,7 +538,6 @@ class Player {
   colHeight(c) { for (let r = 0; r < ROWS; r++) if (this.board[r][c]) return ROWS - r; return 0; }
 
   spawn() {
-    if (this.goalDef && this.seqPos >= this.goalDef.limit) { this.state = 'idle'; this.piece = null; this.goalFlag = 'fail'; return; }
     if (this.board[1][2]) { this.die(); return; }
     const pair = this.seq.get(this.seqPos++);
     this.piece = { x: 2, y: 1, rot: 0, c1: pair[0], c2: pair[1], vx: 2, ang: 0, angV: 0, pulse: 0, visY: 0, trail: [] };
@@ -691,7 +590,7 @@ class Player {
     }
     if (this.isResting()) {
       this.lockT++; this.groundT++;
-      if (down || this.lockT >= LOCK || this.groundT >= GROUND_MAX) this.lock();
+      if (this.lockT >= LOCK || this.groundT >= GROUND_MAX) this.lock();
     } else this.lockT = 0;
   }
   guideY() {
@@ -777,9 +676,6 @@ class Player {
         if (this.board[ny][nx] === OJAMA && !key.has(ny * COLS + nx)) { key.add(ny * COLS + nx); erase.push({ x: nx, y: ny, color: OJAMA }); }
       }
     }
-    const st = this.stats;
-    st.maxGroup = Math.max(st.maxGroup, ...groups.map(g => g.cells.length)); st.maxColors = Math.max(st.maxColors, colors.size);
-    st.ojama += erase.filter(e => e.color === OJAMA).length;
     const power = CHAIN_POWER[Math.min(this.chain - 1, CHAIN_POWER.length - 1)];
     const mult = Math.max(1, Math.min(999, power + conn + COLOR_BONUS[colors.size - 1]));
     let gain = 10 * cleared * mult, zb = 0;
@@ -797,7 +693,7 @@ class Player {
       let offset = 0;
       if (this.pending > 0) { const off = Math.min(n, this.pending); this.pending -= off; n -= off; offset += off; }
       for (const s of game.shots) { if (s.tgt === this && n > 0 && s.n > 0) { const off = Math.min(n, s.n); s.n -= off; n -= off; offset += off; } }
-      if (offset > 0) { this.pops.push({ text: '相殺!', x: FIELD_W / 2, y: FIELD_H * 0.16, t: 0, life: 70, size: 34, chain: 3, col: '#7fe8ff' }); this.barFlash = 24; sfx.offset(); voiceSay(this, 'sousai', 'そうさい！'); }
+      if (offset > 0) { this.pops.push({ text: '相殺!', x: FIELD_W / 2, y: FIELD_H * 0.16, t: 0, life: 70, size: 34, chain: 3, col: '#7fe8ff' }); this.barFlash = 24; sfx.offset(); voiceSay(this, null, 'そうさい！'); }
       if (n > 0 && this.opp) {
         game.shots.push({ x0: this.fx + cx, y0: FY + cy, x1: this.opp.fx + FIELD_W / 2, y1: 55, t: 0, dur: 38, n, tgt: this.opp, from: this, trail: [], x: this.fx + cx, y: FY + cy });
         this.sentTotal += n; sfx.shot();
@@ -869,14 +765,9 @@ class Player {
       this.pops.push({ text: 'ぜんけし!', x: FIELD_W / 2, y: FIELD_H * 0.5, t: 0, life: 130, size: 56, chain: 10 });
       this.cutin = { t: 0, chain: 0, color: 4, life: 66, zen: true };
       this.confetti(Math.round(90 * FXK())); this.flashA = 0.7; this.flashC = '#ffe14d'; game.flash = Math.max(game.flash, 0.35);
-      sfx.zenkeshi(); sfx.cutin(3); rumble(this.idx, 0.9, 500); voiceSay(this, 'zenkeshi', 'ぜんけし！', 1.2);
-      this.stats.allClear = true;
+      sfx.zenkeshi(); sfx.cutin(3); rumble(this.idx, 0.9, 500); voiceSay(this, null, 'ぜんけし！', 1.2);
     }
     this.chainTotal = 0; this.chain = 0;
-    if (this.goalDef) {
-      if (this.goalCheck()) { this.state = 'idle'; this.piece = null; this.goalFlag = 'clear'; return; }
-      if (this.seqPos >= this.goalDef.limit) { this.state = 'idle'; this.piece = null; this.goalFlag = 'fail'; return; }
-    }
     if (this.vs && this.pending > 0 && !(this.opp && this.opp.chain > 0)) { this.dropOjama(); return; }
     this.spawn();
   }
@@ -894,7 +785,7 @@ class Player {
         this.falling.push({ x: c, y: -1.5 - m * 1.1 - Math.random() * 1.5, ty, color: OJAMA });
       }
     }
-    if (n >= 12) voiceSay(this, 'ugh', 'うわっ！');
+    if (n >= 12) voiceSay(this, null, 'うわっ！');
     this.fallMode = 'ojama'; this.fallV = 0.15; sfx.ojama(); rumble(this.idx, Math.min(1, 0.3 + n * 0.03), 250);
     if (!this.falling.length) { this.spawn(); return; }
     this.state = 'fall';
@@ -989,18 +880,6 @@ class Player {
     for (const w of this.waves) w.t++;
     this.waves = this.waves.filter(w => w.t < w.life);
   }
-  goalCheck() {
-    const g = this.goalDef; if (!g) return false;
-    const s = this.stats;
-    switch (g.type) {
-      case 'chain': return this.maxChain >= g.n;
-      case 'colors': return s.maxColors >= g.n;
-      case 'group': return s.maxGroup >= g.n;
-      case 'allclear': return s.allClear;
-      case 'ojama': return s.ojama >= g.n;
-    }
-    return false;
-  }
   update(active) {
     if (this.freeze > 0) this.freeze--;
     else if (active) {
@@ -1033,6 +912,7 @@ class Player {
   }
 }
 
+// CPU思考AI
 const CPU_LV = [null,
   { name: 'かんたん',   react: 45, act: 10, soft: false, mist: 0.30, look: 0, pot: 0,   conn: 1.0, thr: 1, bump: 2 },
   { name: 'ふつう',     react: 30, act: 7,  soft: true,  mist: 0.12, look: 0, pot: 0.5, conn: 1.5, thr: 2, bump: 3 },
@@ -1192,11 +1072,9 @@ function startGame(fromMenu) {
   const mode = settings.mode;
   if (fromMenu) {
     game.wins = [0, 0];
-    if (mode === 'tower') game.floor = Math.max(1, Math.min(settings.towerFloor, towerMaxSel()));
-    if (mode === 'train') game.lessonIdx = settings.lesson;
     saveSettings();
   }
-  game.towerInfo = null; game.lesson = null; game.shock = [];
+  game.shock = [];
   let ps;
   const duel = (seq, lvObj) => {
     const a = new Player(0, 70, seq, true), b = new Player(1, 550, seq, true);
@@ -1209,46 +1087,13 @@ function startGame(fromMenu) {
     const lv = CPU_LV[settings.cpuLevel];
     ps = duel(new Sequence(settings.colors), lv);
     ps[1].label = 'CPU ' + lv.name; ps[1].color = '#8fe8a8';
-  } else if (mode === 'tower') {
-    const info = towerInfo(game.floor); game.towerInfo = info;
-    if (info.type === 'battle') {
-      ps = duel(new Sequence(4), CPU_LV[info.lv]);
-      ps[0].label = 'YOU'; ps[1].label = info.name; ps[1].color = info.boss ? '#ff9a4a' : '#8fe8a8';
-      ps[1].speedMul = info.speed; ps.forEach(p => { p.showWins = false; });
-      ps[0].winText = game.floor === TOWER_MAX ? 'TOWER CLEAR!' : 'FLOOR CLEAR!'; ps[0].loseText = 'LOSE';
-    } else {
-      const p = new Player(0, 310, new Sequence(4), false);
-      p.goalDef = { type: info.goal.type, n: info.goal.n, limit: info.limit };
-      p.label = `TOWER ${info.f}F  MISSION`; p.color = '#ffb35a'; p.winText = 'CLEAR!'; p.loseText = 'FAILED';
-      ps = [p];
-    }
-  } else if (mode === 'train') {
-    const L = LESSONS[game.lessonIdx]; game.lesson = L;
-    const p = new Player(0, 310, fixedSeq(L.pieces), false);
-    loadRows(p, L.rows);
-    p.goalDef = { type: L.goal.type, n: L.goal.n, limit: L.pieces.length, sol: L.sol };
-    p.label = `LESSON ${game.lessonIdx + 1}`; p.color = '#8fe8a8'; p.winText = 'CLEAR!'; p.loseText = 'もう一度!';
-    ps = [p];
   } else ps = [new Player(0, 310, new Sequence(settings.colors), false)];
   game.players = ps;
   game.scene = 'play'; game.over = false; game.paused = false; game.countdown = 150;
   game.shots = []; game.sparks = []; game.flash = 0; game.shake = 0;
-  sfx.ready(); speak('ready', 'よーい', 1.1, 1);
-}
-function recordResult(win) {
-  if (!win) return;
-  if (settings.mode === 'tower') { towerBest = Math.max(towerBest, game.floor); saveProgress(); }
-  if (settings.mode === 'train') { lessonsDone[game.lessonIdx] = true; saveProgress(); }
+  sfx.ready(); speak(null, 'よーい', 1.1, 1);
 }
 function continueAfterOver() {
-  const win = game.players.some(p => p.idx === 0 && p.result === 'win');
-  if (settings.mode === 'tower' && win) {
-    if (game.floor >= TOWER_MAX) { toMenu(); return; }
-    game.floor++; settings.towerFloor = game.floor; saveSettings();
-  } else if (settings.mode === 'train' && win) {
-    if (game.lessonIdx >= LESSONS.length - 1) { toMenu(); return; }
-    game.lessonIdx++; settings.lesson = game.lessonIdx; saveSettings();
-  }
   startGame(false);
 }
 function toMenu() { game.scene = 'menu'; game.players = []; game.paused = false; game.over = false; game.shots = []; game.sparks = []; }
@@ -1292,7 +1137,7 @@ function step() {
   game.shock = game.shock.filter(sh => sh.t < sh.life);
   if (game.countdown > 0) {
     game.countdown--;
-    if (game.countdown === 60) { sfx.go(); speak('go', 'スタート！', 1.2, 1.2); game.players.forEach(p => p.spawn()); }
+    if (game.countdown === 60) { sfx.go(); speak(null, 'スタート！', 1.2, 1.2); game.players.forEach(p => p.spawn()); }
     else if (game.countdown === 105 || game.countdown === 80) sfx.count();
   }
   const ps = game.players;
@@ -1300,7 +1145,6 @@ function step() {
   for (const p of ps) p.update(!game.over);
   updateShots();
   if (!game.over) {
-    const mode = settings.mode;
     if (ps.length === 2) {
       const dead = ps.filter(p => p.dead);
       if (dead.length) {
@@ -1310,18 +1154,14 @@ function step() {
           const w = ps.find(p => !p.dead), l = dead[0];
           w.result = 'win'; w.state = 'won'; l.result = 'lose'; game.wins[w.idx]++; sfx.win();
           w.confetti(Math.round(120 * FXK())); w.flashA = 0.5; w.flashC = '#ffe14d';
-          voiceSay(w, 'win', mode === 'tower' && w.idx === 0 ? 'クリア！' : 'かったー！', 1.15);
-          if (mode === 'tower') recordResult(w.idx === 0);
+          voiceSay(w, null, 'かったー！', 1.15);
         }
       }
     } else {
       const p = ps[0];
-      if (p.goalFlag === 'clear') {
-        game.over = true; p.result = 'win'; p.state = 'won'; p.confetti(Math.round(120 * FXK())); p.flashA = 0.5; p.flashC = '#ffe14d';
-        sfx.win(); voiceSay(p, 'clear', settings.mode === 'train' ? 'せいかい！' : 'クリア！', 1.15); recordResult(true);
-      } else if (p.goalFlag === 'fail' || p.dead) {
+      if (p.dead) {
         game.over = true; p.result = 'lose'; sfx.lose();
-        if (p.goalDef) voiceSay(p, 'fail', 'ざんねん', 0.95); else voiceSay(p, 'lose', 'ばたんきゅー', 0.95);
+        voiceSay(p, null, 'ゲームオーバー', 0.95);
       }
     }
   }
@@ -1404,23 +1244,6 @@ function drawPair(cx, topY, s, pair, alpha) {
   drawPuyo(cx, topY + s, pair[0], s, false);
   ctx.restore();
 }
-function pairCells(p, x, rot) {
-  const dx = OFFS[rot][0], dy = OFFS[rot][1], h = c => p.colHeight(c), rowOf = c => ROWS - 1 - h(c);
-  if (rot === 0) return [[x, rowOf(x)], [x, rowOf(x) - 1]];
-  if (rot === 2) return [[x, rowOf(x) - 1], [x, rowOf(x)]];
-  return [[x, rowOf(x)], [x + dx, rowOf(x + dx)]];
-}
-function drawHint(p, sol) {
-  const pc = p.piece; if (!pc) return;
-  const [x, rot] = sol, cells = pairCells(p, x, rot), cols = [pc.c1, pc.c2];
-  const pulse = 0.5 + 0.2 * Math.sin(game.frame * 0.15);
-  cells.forEach(([cx, cy], i) => {
-    if (cy < 0) return;
-    ctx.save(); ctx.globalAlpha = pulse; drawPuyo(cx * CS + CS / 2, cy * CS + CS / 2, cols[i], CS * 0.92, false); ctx.restore();
-    ctx.save(); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.5; ctx.setLineDash([4, 4]); ctx.globalAlpha = 0.9;
-    ctx.beginPath(); ctx.arc(cx * CS + CS / 2, cy * CS + CS / 2, CS * 0.5, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
-  });
-}
 function drawLivePair(px, py, p, S, lockK, blink) {
   const m = settings.rotAnim, str = m ? 1 + Math.min(0.2, Math.abs(p.angV || 0) * 0.35) : 1;
   const sx = px + Math.sin(p.ang) * S * str, sy = py - Math.cos(p.ang) * S * str;
@@ -1447,52 +1270,7 @@ function wrapLines(str, size, maxW, bold = false) {
   if (cur) out.push(cur);
   return out;
 }
-function drawInfoPanel(p) {
-  const g = p.goalDef; if (!g) return;
-  const x = 20, y = FY, w = 290, L = game.lesson, ti = game.towerInfo, pad = 16;
-  panel(x, y, w, FIELD_H);
-  let yy = y + 30;
-  if (L) {
-    text(`LESSON ${game.lessonIdx + 1} / ${LESSONS.length}` + (lessonsDone[game.lessonIdx] ? '  ★クリア済み' : ''), x + pad, yy, 13, '#9fa6e0'); yy += 34;
-    text(L.title, x + pad, yy, 23, '#ffe14d'); yy += 12;
-    for (const l of wrapLines(L.desc, 14, w - pad * 2)) { yy += 22; text(l, x + pad, yy, 14, '#d6d9ff', 'left', false); }
-  } else if (ti) {
-    text(`TOWER  ${ti.f}F`, x + pad, yy, 13, '#9fa6e0'); yy += 34;
-    text('ミッション', x + pad, yy, 25, '#ffb35a'); yy += 12;
-    for (const l of wrapLines('ぷよがなくなる前に、目標の連鎖をつくろう。連鎖は同じ色のかたまりが落ちて、次々とつながると起こります。', 14, w - pad * 2)) { yy += 22; text(l, x + pad, yy, 14, '#d6d9ff', 'left', false); }
-  }
-  yy = Math.max(yy + 30, y + 250);
-  text('もくひょう', x + pad, yy, 13, '#9fa6e0'); yy += 8;
-  for (const l of wrapLines(goalText(g), 18, w - pad * 2, true)) { yy += 26; text(l, x + pad, yy, 18, '#ffffff'); }
-  const st = p.stats;
-  const prog = { chain: [p.maxChain, g.n, '最大連鎖'], colors: [st.maxColors, g.n, '同時に消した色'], group: [st.maxGroup, g.n, '最大連結'], allclear: [st.allClear ? 1 : 0, 1, 'ぜんけし'], ojama: [st.ojama, g.n, '消したおじゃま'] }[g.type];
-  yy += 30; text(prog[2], x + pad, yy, 13, '#9fa6e0'); text(`${Math.min(prog[0], prog[1])} / ${prog[1]}`, x + w - pad, yy, 16, '#ffffff', 'right');
-  yy += 10; rr(x + pad, yy, w - pad * 2, 10, 5); ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fill();
-  const k = Math.min(1, prog[0] / prog[1]);
-  if (k > 0) { rr(x + pad, yy, (w - pad * 2) * k, 10, 5); ctx.fillStyle = k >= 1 ? '#8fe8a8' : '#7f9bff'; ctx.fill(); }
-  const left = Math.max(0, g.limit - p.seqPos + (p.piece ? 1 : 0));
-  yy += 38; text('のこりのぷよ', x + pad, yy, 13, '#9fa6e0'); text(`${left} 組`, x + w - pad, yy, 20, left <= 2 ? '#ff8a8a' : '#ffffff', 'right');
-  if (L) { yy += 36; text('H キー: ヒント ' + (settings.hint ? 'ON (点滅が置く場所)' : 'OFF'), x + pad, yy, 13, '#ffd9a0', 'left', false); }
-}
-function drawSplash() {
-  if (game.countdown <= 60) return;
-  const L = game.lesson, ti = game.towerInfo; if (!L && !ti) return;
-  const k = Math.min(1, (150 - game.countdown) / 14), a = game.countdown < 80 ? (game.countdown - 60) / 20 : 1;
-  const two = game.players.length === 2, cx = two ? 500 : 450, y = two ? 640 : 700;
-  ctx.save(); ctx.globalAlpha = Math.max(0, a) * k;
-  let l1, l2, col = '#ffe14d';
-  if (L) { l1 = `LESSON ${game.lessonIdx + 1}`; l2 = L.title; }
-  else if (ti.type === 'mission') { l1 = `TOWER ${ti.f}F`; l2 = `ミッション: ${goalText(ti.goal)}`; col = '#ffb35a'; }
-  else { l1 = `TOWER ${ti.f}F`; l2 = ti.boss ? `ボス「${ti.name}」があらわれた!` : `${ti.name} とたいせん!`; col = ti.boss ? '#ff9a4a' : '#8fe8a8'; }
-  ctx.font = `bold 20px ${FONT}`; const w2 = Math.max(260, ctx.measureText(l2).width + 70);
-  rr(cx - w2 / 2, y - 34, w2, 80, 14); ctx.fillStyle = 'rgba(8,10,40,0.9)'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = col; ctx.stroke();
-  text(l1, cx, y - 6, 16, '#9fa6e0', 'center'); text(l2, cx, y + 28, 22, col, 'center');
-  ctx.restore();
-}
 function overHint() {
-  const m = settings.mode, win = game.players.some(p => p.idx === 0 && p.result === 'win');
-  if (m === 'tower') return win ? (game.floor >= TOWER_MAX ? 'タワー制覇!  Enter: メニューへ' : `Enter / パッドの+: ${game.floor + 1}階へ進む  Backspace: メニューへ`) : 'Enter / パッドの+: この階にもう一度挑戦  Backspace: メニューへ';
-  if (m === 'train') return win ? (game.lessonIdx >= LESSONS.length - 1 ? '全レッスンクリア!  Enter: メニューへ' : 'Enter / パッドの+: 次のレッスンへ  Backspace: メニューへ') : 'Enter / パッドの+: もう一度  Backspace: メニューへ';
   return 'Enter / Space / パッドの+: もう一度  Backspace / パッドの−: メニューへ';
 }
 function panel(x, y, w, h) {
@@ -1604,7 +1382,6 @@ function drawField(p) {
   for (const f of p.falling) drawPuyo(f.x * CS + CS / 2, f.y * CS + CS / 2, f.color, CS, false);
 
   const pc = p.piece;
-  if (pc && p.state === 'control' && p.goalDef && p.goalDef.sol && settings.hint) { const sol = p.goalDef.sol[p.seqPos - 1]; if (sol) drawHint(p, sol); }
   if (pc && p.state === 'control') {
     if (settings.guide) {
       const gy = p.guideY();
@@ -1699,9 +1476,8 @@ function drawSide(p) {
   const bx = p.fx + FIELD_W + 16, bw = 104, cxm = bx + bw / 2;
   panel(bx, FY, bw, 196);
   text('NEXT', cxm, FY + 22, 14, '#9fa6e0', 'center');
-  const lim = p.goalDef ? p.goalDef.limit : Infinity;
-  drawPair(cxm, FY + 58, 34, p.seqPos < lim ? p.seq.get(p.seqPos) : null, 1);
-  drawPair(cxm, FY + 140, 26, p.seqPos + 1 < lim ? p.seq.get(p.seqPos + 1) : null, 0.85);
+  drawPair(cxm, FY + 58, 34, p.seq.get(p.seqPos), 1);
+  drawPair(cxm, FY + 140, 26, p.seq.get(p.seqPos + 1), 0.85);
 
   const by = FY + 212;
   panel(bx, by, bw, 176);
@@ -1720,7 +1496,7 @@ function drawSide(p) {
 
   const iy = by + 190;
   panel(bx, iy, bw, 112);
-  text('消したぷよ', cxm, iy + 22, 12, '#9fa6e0', 'center', false);
+  text('消した数', cxm, iy + 22, 12, '#9fa6e0', 'center', false);
   text(String(p.totalErased), cxm, iy + 46, 20, '#fff', 'center');
   if (p.vs) {
     text('送ったおじゃま', cxm, iy + 70, 12, '#9fa6e0', 'center', false);
@@ -1840,65 +1616,57 @@ function drawBackground() {
 function menuDetail() {
   const m = settings.mode;
   if (m === 'cpu') return ['CPUの強さ', `Lv.${settings.cpuLevel}  ${CPU_LV[settings.cpuLevel].name}`, false];
-  if (m === 'tower') {
-    const f = Math.min(settings.towerFloor, towerMaxSel()), i = towerInfo(f);
-    return ['スタートする階', `${f}F  ${i.type === 'mission' ? 'ミッション' : (i.boss ? 'ボス ' : '') + i.name} (到達 ${towerBest}F)`, false];
-  }
-  if (m === 'train') { const L = LESSONS[settings.lesson]; return ['レッスン', `${settings.lesson + 1}. ${L.title}${lessonsDone[settings.lesson] ? ' ★' : ''}`, false]; }
-  return ['', '— (このモードでは使いません)', true];
+  return ['色数', settings.colors + '色', false];
 }
 function drawMenu() {
   const f = game.frame;
-  const titles = ['ぷ', 'よ', 'ぷ', 'よ'], cols = [1, 2, 3, 4];
+  const titles = ['ぽ', 'に', 'ょ', 'ん'], cols = [1, 2, 3, 4];
   ctx.lineJoin = 'round';
   titles.forEach((t, i) => {
     const x = 330 + i * 110, y = 130 + Math.sin(f * 0.05 + i) * 6;
     ctx.font = `900 96px ${FONT}`; ctx.textAlign = 'center'; ctx.lineWidth = 12; ctx.strokeStyle = '#10143a'; ctx.strokeText(t, x, y);
     ctx.fillStyle = PAL[cols[i]].m; ctx.fillText(t, x, y);
   });
-  text('2P対戦版', 500, 178, 30, '#ffffff', 'center');
-  const pn = padInfo.length ? 'コントローラー  ' + padInfo.map((n, i) => `P${i + 1}: ${n}`).join('    ') : 'コントローラー未接続（有線でつないでボタンを押すと認識します）';
+  text('2P対戦パズル', 500, 178, 30, '#ffffff', 'center');
+  const pn = padInfo.length ? 'コントローラー  ' + padInfo.map((n, i) => `P${i + 1}: ${n}`).join('    ') : 'コントローラー未接続（接続してボタンを押すと認識します）';
   text(pn, 500, 206, 14, padInfo.length ? '#8fe8a8' : '#8a91c8', 'center', false);
 
-  const det = menuDetail(), m = settings.mode, free = m === 'tower' || m === 'train';
+  const det = menuDetail(), m = settings.mode;
   const items = [
     ['モード', MODE_NAMES[m]],
-    [det[0] || '詳細', det[1]],
-    ['ぷよの色数', free ? '— (自動)' : settings.colors + '色'],
-    ['落下スピード', m === 'train' ? '— (固定)' : ['ゆっくり', 'ふつう', 'はやい'][settings.speed]],
-    ['オプション', '回転モーション・演出・音・ボイスなど ▶'],
+    [det[0], det[1]],
+    ['落下スピード', ['ゆっくり', 'ふつう', 'はやい'][settings.speed]],
+    ['オプション', '回転モーション・演出・音など ▶'],
     ['キー設定', '1P・2Pのキーを変更する ▶'],
     ['', 'スタート (Enter / Space)'],
   ];
-  const bx = 200, bw = 600, y0 = 232;
+  const bx = 200, bw = 600, y0 = 240;
   items.forEach((it, i) => {
-    const y = y0 + i * 42, sel = game.sel === i, dim = (i === 1 && det[2]) || (i === 2 && free) || (i === 3 && m === 'train');
-    rr(bx, y, bw, 34, 10);
+    const y = y0 + i * 46, sel = game.sel === i;
+    rr(bx, y, bw, 38, 10);
     ctx.fillStyle = sel ? 'rgba(120,140,255,0.35)' : 'rgba(10,12,40,0.6)'; ctx.fill();
     ctx.lineWidth = 2; ctx.strokeStyle = sel ? '#aab6ff' : 'rgba(150,160,255,0.25)'; ctx.stroke();
-    if (i === 6) text(it[1], bx + bw / 2, y + 25, 20, sel ? '#ffe14d' : '#fff', 'center');
+    if (i === 5) text(it[1], bx + bw / 2, y + 27, 20, sel ? '#ffe14d' : '#fff', 'center');
     else {
-      text(it[0], bx + 20, y + 24, 17, dim ? '#6a70a0' : '#b8beee');
-      const arrow = sel && i < 4 && !dim;
-      text((arrow ? '◀ ' : '') + it[1] + (arrow ? ' ▶' : ''), bx + bw - 20, y + 24, 17, dim ? '#6a70a0' : '#ffffff', 'right');
+      text(it[0], bx + 20, y + 26, 17, '#b8beee');
+      const arrow = sel && i < 3;
+      text((arrow ? '◀ ' : '') + it[1] + (arrow ? ' ▶' : ''), bx + bw - 20, y + 26, 17, '#ffffff', 'right');
     }
   });
   const desc = {
-    vs: '2人で対戦。連鎖でおじゃまぷよを送り合おう',
-    cpu: 'CPUと対戦。強さは5段階',
-    tower: '20階のタワーに挑戦!  3の倍数の階はミッション、5階ごとにボス戦。クリアした階は保存されます',
-    train: '連鎖のコツを課題形式で練習。Hキーで置く場所のヒントを表示',
-    solo: 'ひとりでスコアアタック。時間がたつほど落下が速くなります',
+    vs: '2人で対戦。連鎖でおじゃまを送って勝利を目指そう！',
+    cpu: 'CPUと対戦。強さは5段階から選べます',
+    solo: 'ひとりでスコアアタック。連鎖をつないでハイスコアを目指そう',
   }[m];
-  text(desc, 500, 548, 15, '#ffd9a0', 'center', false);
+  text(desc, 500, 535, 16, '#ffd9a0', 'center', false);
   const lines = [
     '【1P】 ' + bindText(0),
     '【2P】 ' + bindText(1),
-    'パッド(Switch Proコン/PS4・PS5など): 十字キー・スティック移動 / A・X・○・△・R=右回転 / B・Y・✕・□・L=左回転 / +・Options=ポーズ',
-    'P / Esc: ポーズ   M: 効果音   V: ボイス   H: ヒント(特訓)   ※ひとり用・CPU戦は1P・2Pどちらのキーでも操作できます',
-    '4つ以上つなげて消す → 連鎖で高得点 → おじゃまを送って攻撃(70点で1個) / 自分の連鎖で相殺 / 全消しで30個',
+    'コントローラー: 十字キー/スティック移動 / A・X・R=右回転 / B・Y・L=左回転 / +=ポーズ',
+    'P / Esc: ポーズ   M: 効果音   V: ボイス   ※ひとり用・CPU戦は1P/2Pどちらのキーでも操作可能',
+    '4つ以上つなげて消す → 連鎖で高得点 → おじゃまを送って攻撃！',
   ];
-  lines.forEach((l, i) => text(l, 500, 586 + i * 22, 13, i === 4 ? '#ffd9a0' : '#b8beee', 'center', false));
+  lines.forEach((l, i) => text(l, 500, 575 + i * 22, 13, i === 4 ? '#ffd9a0' : '#b8beee', 'center', false));
   for (let i = 0; i < 14; i++) {
     const c = 1 + (i % 5), x = 50 + i * 68, y = 724 + Math.sin(f * 0.06 + i * 0.9) * 8;
     drawPuyo(x, y, c, 40, false);
@@ -1909,51 +1677,32 @@ function drawOpts() {
   const bar = n => '■'.repeat(n) + '□'.repeat(10 - n) + '  ' + n;
   const onoff = v => v ? 'ON' : 'OFF';
   const rows = [
-    ['回転モーション', ['なし (すぐ切り替え)', 'なめらか', 'バネ (ぷるん)'][settings.rotAnim]],
+    ['回転モーション', ['なし', 'なめらか', 'バネ (ぷるん)'][settings.rotAnim]],
     ['連鎖演出の量', ['控えめ', 'ふつう', '派手'][settings.fx]],
     ['画面のゆれ', onoff(settings.shake)],
     ['コントローラー振動', onoff(settings.rumble)],
     ['横移動の速さ', ['ゆっくり', 'ふつう', 'はやい'][settings.das]],
-    ['高速落下の速さ', ['ゆっくり', 'ふつう', 'はやい'][settings.soft]],
+    ['落下スピード制御', ['ゆっくり', 'ふつう', 'はやい'][settings.soft]],
     ['着地ガイド', settings.guide ? 'あり' : 'なし'],
     ['効果音', onoff(settings.sound)],
     ['音量', bar(settings.vol)],
-    ['ボイス', onoff(settings.voice)],
-    ['おじゃまぷよの大きさ', Math.round(settings.ojScale * 100) + '%' + (settings.ojScale === 1 ? ' (標準)' : '')],
     ['', 'もどる (Esc)'],
   ];
-  const bx = 200, bw = 600, y0 = 86;
+  const bx = 200, bw = 600, y0 = 100;
   rows.forEach((it, i) => {
-    const y = y0 + i * 36, sel = game.optSel === i;
-    rr(bx, y, bw, 30, 9); ctx.fillStyle = sel ? 'rgba(120,140,255,0.35)' : 'rgba(10,12,40,0.6)'; ctx.fill();
+    const y = y0 + i * 40, sel = game.optSel === i;
+    rr(bx, y, bw, 32, 9); ctx.fillStyle = sel ? 'rgba(120,140,255,0.35)' : 'rgba(10,12,40,0.6)'; ctx.fill();
     ctx.lineWidth = 2; ctx.strokeStyle = sel ? '#aab6ff' : 'rgba(150,160,255,0.25)'; ctx.stroke();
-    if (i === OPT_N - 1) { text(it[1], bx + bw / 2, y + 22, 18, sel ? '#ffe14d' : '#fff', 'center'); return; }
-    text(it[0], bx + 20, y + 21, 16, '#b8beee');
+    if (i === OPT_N - 1) { text(it[1], bx + bw / 2, y + 23, 18, sel ? '#ffe14d' : '#fff', 'center'); return; }
+    text(it[0], bx + 20, y + 22, 16, '#b8beee');
     const arrow = sel;
-    text((arrow ? '◀ ' : '') + it[1] + (arrow ? ' ▶' : ''), bx + bw - 20, y + 21, 16, '#ffffff', 'right');
+    text((arrow ? '◀ ' : '') + it[1] + (arrow ? ' ▶' : ''), bx + bw - 20, y + 22, 16, '#ffffff', 'right');
   });
-  wrapLines(OPT_DESC[game.optSel], 14, 760).forEach((l, i) => text(l, 500, 540 + i * 20, 14, '#ffd9a0', 'center', false));
-  const by = 584, bh = 170;
-  panel(200, by, 290, bh); panel(510, by, 290, bh);
-  text('回転モーションの確認', 345, by + 24, 14, '#9fa6e0', 'center');
-  text('おじゃまぷよの大きさの確認', 655, by + 24, 14, '#9fa6e0', 'center');
-  const d = game.demo;
-  if (d) {
-    ctx.save(); ctx.beginPath(); ctx.rect(200, by + 32, 290, bh - 36); ctx.clip();
-    drawLivePair(345, by + 100, d, 46, 0, false);
-    ctx.restore();
-  }
-  [1, 2, 6, 3, 6].forEach((c, i) => {
-    const x = 540 + i * 56, y = by + 100;
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.strokeRect(x - 26, y - 26, 52, 52);
-    drawPuyo(x, y, c, 52, false);
-  });
-  text('白い枠(1マス)に対して、ぷよとおじゃまが同じ大きさに見えればOK', 655, by + 150, 11, '#8a91c8', 'center', false);
 }
 
 function drawKeys() {
   text('キー設定', 500, 74, 44, '#ffffff', 'center');
-  text('項目を選んで Enter → 割り当てたいキーを押す (Esc でキャンセル) 取り合いになったキーは自動で入れ替わります', 500, 106, 15, '#b8beee', 'center', false);
+  text('項目を選んで Enter → 割り当てたいキーを押す (Esc でキャンセル)', 500, 106, 15, '#b8beee', 'center', false);
   for (let pi = 0; pi < 2; pi++) {
     const x = pi === 0 ? 60 : 520, w = 420;
     text(pi === 0 ? 'PLAYER 1' : 'PLAYER 2', x + w / 2, 150, 22, pi === 0 ? '#ff7f8f' : '#6fc6ff', 'center');
@@ -1966,16 +1715,13 @@ function drawKeys() {
       text(waiting ? 'キーを押してください…' : bindStr(pi, a), x + w - 18, y + 27, 20, waiting ? '#ffe14d' : '#ffffff', 'right');
     });
   }
-  const btns = ['1Pと2Pのキーを入れ替える', '初期設定に戻す', '戻る (Esc)'];
+  const btns = ['1Pと2Pのキーを入れ替え', '初期設定に戻す', '戻る (Esc)'];
   btns.forEach((b, i) => {
     const idx = 10 + i, y = 440 + i * 52, sel = game.keySel === idx;
     rr(300, y, 400, 42, 10); ctx.fillStyle = sel ? 'rgba(120,140,255,0.38)' : 'rgba(10,12,40,0.6)'; ctx.fill();
     ctx.lineWidth = 2; ctx.strokeStyle = sel ? '#aab6ff' : 'rgba(150,160,255,0.25)'; ctx.stroke();
     text(b, 500, y + 28, 20, sel ? '#ffe14d' : '#ffffff', 'center');
   });
-  text('↑↓: 項目選択 ←→: 1P/2Pの切り替え 設定はこのブラウザに自動保存されます', 500, 640, 15, '#8a91c8', 'center', false);
-  text('※ P・M・Esc・Enter・Space・Backspace・Tab は使えません', 500, 666, 14, '#8a91c8', 'center', false);
-  text('※ ひとり用は1P・2P両方のキーで操作できます', 500, 690, 14, '#8a91c8', 'center', false);
 }
 
 function drawToast() {
@@ -1996,7 +1742,6 @@ function render() {
 
   ctx.save();
   if (game.shake > 0 && settings.shake) ctx.translate((Math.random() - 0.5) * game.shake * 1.4, (Math.random() - 0.5) * game.shake * 1.4);
-  game.players.forEach(drawInfoPanel);
   game.players.forEach(drawPlayer);
   drawShots();
   game.players.forEach(drawCutin);
@@ -2011,19 +1756,12 @@ function render() {
   if (game.flash > 0.01) { ctx.fillStyle = `rgba(255,255,255,${game.flash})`; ctx.fillRect(0, 0, W, H); }
 
   if (game.players.length === 2) {
-    const ti = game.towerInfo;
-    if (ti) {
-      text('TOWER', 500, 318, 15, '#9fa6e0', 'center'); text(ti.f + 'F', 500, 366, 44, ti.boss ? '#ff9a4a' : '#ffffff', 'center');
-      if (ti.boss) text('BOSS', 500, 392, 16, '#ff9a4a', 'center');
-    } else {
-      text('VS', 500, 330, 44, '#ffffff', 'center');
-      text(`${game.wins[0]} - ${game.wins[1]}`, 500, 372, 26, '#b8beee', 'center');
-    }
+    text('VS', 500, 330, 44, '#ffffff', 'center');
+    text(`${game.wins[0]} - ${game.wins[1]}`, 500, 372, 26, '#b8beee', 'center');
   }
-  drawSplash();
   let hint = settings.mode !== 'vs'
-    ? `${bindText(0)} (1P・2P両方のキーで操作可) P: ポーズ M: 音 V: ボイス${game.lesson ? ' H: ヒント' : ''}`
-    : `1P: ${bindStr(0, 'left')}${bindStr(0, 'right')}${bindStr(0, 'down')} / 回転 ${bindStr(0, 'cw')}・${bindStr(0, 'ccw')} 2P: ${bindStr(1, 'left')}${bindStr(1, 'right')}${bindStr(1, 'down')} / 回転 ${bindStr(1, 'cw')}・${bindStr(1, 'ccw')} P: ポーズ M: 音`;
+    ? `${bindText(0)} (1P/2P両方で操作可) P: ポーズ M: 音 V: ボイス`
+    : `1P: ${bindStr(0, 'left')}${bindStr(0, 'right')}${bindStr(0, 'down')} 2P: ${bindStr(1, 'left')}${bindStr(1, 'right')}${bindStr(1, 'down')} P: ポーズ`;
   if (game.over) hint = overHint();
   text(hint, 500, 764, 14, game.over ? '#ffe14d' : '#8a91c8', 'center', game.over);
   if (game.paused) {
