@@ -1,1786 +1,868 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>ぽにょんぽにょん 2P対戦版</title>
-<style>
-  html,body{margin:0;height:100%;background:#080a18;overflow:hidden;touch-action:none;}
-  body{display:flex;align-items:center;justify-content:center}
-  canvas{display:block;width:min(100vw,calc(100vh * 1000 / 772));aspect-ratio:1000/772;height:auto}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>ぽにょんぽにょん 2P対戦版</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+        }
+        
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #0f172a; /* Slate 900 */
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* 画面全体にフィットするレスポンシブキャンバスラッパー */
+        .game-wrapper {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 8px;
+        }
+
+        /* アスペクト比1000:772を維持しながら縦横最大の領域にフィット */
+        canvas {
+            aspect-ratio: 1000 / 772;
+            width: auto;
+            height: auto;
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+            border-radius: 16px;
+            background-color: #1e293b;
+        }
+
+        /* タッチコントローラー（モバイル用オーバーレイ） */
+        .touch-controls {
+            position: absolute;
+            bottom: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 95%;
+            max-width: 980px;
+            display: none; /* JSで画面サイズやタッチ検知に応じて表示 */
+            justify-content: space-between;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        .touch-btn {
+            pointer-events: auto;
+            background: rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(8px);
+            border: 2px solid rgba(255, 255, 255, 0.4);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            active:scale-95;
+            transition: transform 0.05s;
+        }
+
+        .touch-btn:active {
+            background: rgba(255, 255, 255, 0.4);
+            transform: scale(0.92);
+        }
+    </style>
 </head>
 <body>
-<canvas id="c" width="1000" height="772"></canvas>
-<script>
-'use strict';
-// =====================================================================
-//  ぽにょんぽにょん 2P対戦版
-// =====================================================================
-const cv = document.getElementById('c');
-const ctx = cv.getContext('2d');
-const W = 1000, H = 772;
-const DPR = Math.min(2, window.devicePixelRatio || 1);
-cv.width = W * DPR; cv.height = H * DPR;
-
-const CS = 40, COLS = 6, ROWS = 13;          // 行0は見えない段、1〜12が表示段
-const FIELD_W = COLS * CS, FIELD_H = ROWS * CS, FY = 84;
-const FONT = "'Hiragino Kaku Gothic ProN','Yu Gothic','Meiryo',sans-serif";
-const OFFS = [[0, -1], [1, 0], [0, 1], [-1, 0]];   // 上,右,下,左
-const OJAMA = 6;
-
-// 得点計算パラメータ
-const CHAIN_POWER = [0, 8, 16, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480, 512, 544, 576, 608, 640, 672];
-const CONNECT = [0, 0, 0, 0, 0, 2, 3, 4, 5, 6, 7, 10];
-const COLOR_BONUS = [0, 3, 6, 12, 24];
-const OJAMA_RATE = 70;
-
-// 操作パラメータ（高速落下の行き過ぎを抑止するためSOFTのスピードを微調整）
-const DAS = 11, ARR = 3, SOFT = 0.25, LOCK = 30, GROUND_MAX = 100;
-const ERASE_BASE = 26, ERASE_T = 44;
-
-const PAL = {
-  1: { m: '#ff4a55', l: '#ffa0a6', d: '#b3162a' },
-  2: { m: '#3fd45f', l: '#a6f2b4', d: '#13852e' },
-  3: { m: '#4a7dff', l: '#a9c3ff', d: '#1a3fb0' },
-  4: { m: '#ffd531', l: '#fff3a0', d: '#b88f00' },
-  5: { m: '#b65cff', l: '#e2b9ff', d: '#6d22b0' },
-  6: { m: '#c9ccd8', l: '#f4f5fa', d: '#7b7f92' },
-};
-
-// 画像設定
-const SPRITE_FILES = { 1: 'img/puyo_1.png', 2: 'img/puyo_2.png', 3: 'img/puyo_3.png', 4: 'img/puyo_4.png', 5: 'img/puyo_5.png', 6: 'img/ojamapuyo_1.png' };
-const sprites = {};
-for (const k in SPRITE_FILES) { const im = new Image(); im.src = SPRITE_FILES[k]; sprites[k] = im; }
-const batankyuImg = new Image(); batankyuImg.src = 'img/batankyu.png';
-const hasSprite = c => { const im = sprites[c]; return !!(im && im.complete && im.naturalWidth > 0); };
-const hasBatan = () => batankyuImg.complete && batankyuImg.naturalWidth > 0;
-const OJ_FILES = { 6: 'img/ojamapuyo_1.png', 30: 'img/ojamapuyo_2.png', 180: 'img/ojamapuyo_3.png', 360: 'img/ojamapuyo_4.png', 720: 'img/ojamapuyo_5.png' };
-const ojImgs = {};
-for (const k in OJ_FILES) { const im = new Image(); im.src = OJ_FILES[k]; ojImgs[k] = im; }
-const hasOj = k => { const im = ojImgs[k]; return !!(im && im.complete && im.naturalWidth > 0); };
-
-// 設定保存
-const SETTINGS_KEY = 'ponyon_settings_v1';
-const MODES = ['vs', 'cpu', 'solo'];
-const MODE_NAMES = { vs: 'ふたりで対戦', cpu: 'CPUと対戦', solo: 'ひとりでスコアアタック' };
-const settings = {
-  mode: 'vs', cpuLevel: 2, colors: 4, speed: 1, guide: true, sound: true,
-  voice: true, vol: 7, ojScale: 1, rotAnim: 2, fx: 1, shake: true, rumble: true, das: 1, soft: 1
-};
-function loadSettings() {
-  try {
-    const o = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
-    for (const k in settings) if (k in o && typeof o[k] === typeof settings[k]) settings[k] = o[k];
-  } catch (e) { }
-  if (!MODES.includes(settings.mode)) settings.mode = 'vs';
-  const cl = (k, a, b) => { settings[k] = Math.max(a, Math.min(b, Math.round(settings[k] * 100) / 100)); };
-  cl('cpuLevel', 1, 5); cl('colors', 3, 5); cl('speed', 0, 2); cl('vol', 0, 10); cl('ojScale', 0.5, 1.5);
-  cl('rotAnim', 0, 2); cl('fx', 0, 2); cl('das', 0, 2); cl('soft', 0, 2);
-}
-function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { } }
-loadSettings();
-const FXK = () => [0.35, 1, 1.6][settings.fx];
-const DAS_T = [[14, 4], [11, 3], [8, 2]];
-const SOFT_T = [0.18, 0.28, 0.42]; // スティックを倒し続けた際にも制御しやすい落下の早さに修正
-
-// サウンド機能
-let actx = null, master = null;
-function applyVol() { if (master) master.gain.value = settings.vol / 7; }
-function ensureAudio() {
-  if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { actx = null; } }
-  if (actx && !master) { master = actx.createGain(); master.connect(actx.destination); }
-  applyVol();
-  if (actx && actx.state === 'suspended') actx.resume();
-}
-function tone(freq, dur = 0.08, type = 'sine', vol = 0.08, slide = 0, delay = 0) {
-  if (!settings.sound || !actx) return;
-  const t = actx.currentTime + delay;
-  const o = actx.createOscillator(), g = actx.createGain();
-  o.type = type; o.frequency.setValueAtTime(freq, t);
-  if (slide) o.frequency.linearRampToValueAtTime(Math.max(20, freq + slide), t + dur);
-  g.gain.setValueAtTime(vol, t);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(g); g.connect(master || actx.destination);
-  o.start(t); o.stop(t + dur + 0.03);
-}
-function noise(dur = 0.3, vol = 0.05, f0 = 600, f1 = 3000, delay = 0) {
-  if (!settings.sound || !actx) return;
-  const t = actx.currentTime + delay, len = Math.max(1, Math.floor(actx.sampleRate * dur));
-  const buf = actx.createBuffer(1, len, actx.sampleRate), d = buf.getChannelData(0);
-  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
-  const src = actx.createBufferSource(); src.buffer = buf;
-  const f = actx.createBiquadFilter(); f.type = 'bandpass';
-  f.frequency.setValueAtTime(f0, t); f.frequency.exponentialRampToValueAtTime(f1, t + dur);
-  const g = actx.createGain(); g.gain.value = vol;
-  src.connect(f); f.connect(g); g.connect(master || actx.destination); src.start(t);
-}
-const SCALE = [523, 587, 659, 784, 880, 1047, 1175, 1319, 1568, 1760, 2093];
-const sfx = {
-  move() { tone(420, 0.025, 'triangle', 0.02); },
-  rotate() { tone(620, 0.035, 'square', 0.022); tone(930, 0.035, 'square', 0.015, 0, 0.03); },
-  lock() { tone(260, 0.1, 'sine', 0.1, -140); noise(0.05, 0.03, 1200, 400); },
-  spawn() { tone(700, 0.04, 'sine', 0.012, 200); },
-  erase(n) {
-    const f = SCALE[Math.min(n - 1, SCALE.length - 1)];
-    tone(f * 0.5, 0.14, 'sine', 0.12, f * 0.4);
-    tone(f, 0.28, 'triangle', 0.1); tone(f * 1.5, 0.22, 'sine', 0.05, 0, 0.02);
-    if (n >= 3) tone(f * 2, 0.18, 'square', 0.03, 0, 0.06);
-    if (n >= 4) tone(f / 2, 0.4, 'sawtooth', 0.04);
-    if (n >= 7) { noise(0.5, 0.05, 400, 4000); tone(f * 3, 0.3, 'triangle', 0.05, 200, 0.08); }
-  },
-  pop() { const f = 500 + Math.random() * 500; tone(f, 0.07, 'sine', 0.035, f * 0.9); },
-  cutin(tier) { noise(0.35, 0.06, 300, 3500); [0, 4, 7, 12].forEach((s, i) => tone(330 * Math.pow(2, s / 12), 0.25 + tier * 0.05, 'sawtooth', 0.03, 0, i * 0.04)); },
-  shot() { noise(0.4, 0.035, 500, 2600); tone(300, 0.35, 'sine', 0.05, 900); },
-  hit() { tone(95, 0.3, 'sawtooth', 0.1, -40); noise(0.2, 0.05, 1500, 300); tone(988, 0.06, 'square', 0.03, 0, 0.05); tone(1319, 0.08, 'square', 0.03, 0, 0.1); },
-  ojama() { tone(120, 0.18, 'sawtooth', 0.05, -40); noise(0.3, 0.03, 2500, 500); },
-  land() { tone(110, 0.25, 'sine', 0.18, -60); noise(0.18, 0.07, 900, 200); tone(70, 0.3, 'triangle', 0.1, -20, 0.03); },
-  offset() { [1319, 1568, 2093, 2637].forEach((f, i) => tone(f, 0.12, 'triangle', 0.06, 0, i * 0.05)); },
-  warn() { tone(880, 0.08, 'square', 0.03); tone(660, 0.08, 'square', 0.03, 0, 0.1); },
-  zenkeshi() { [523, 659, 784, 1047, 1319, 1568, 2093].forEach((f, i) => { tone(f, 0.24, 'triangle', 0.1, 0, i * 0.07); tone(f / 2, 0.24, 'sawtooth', 0.03, 0, i * 0.07); }); noise(0.6, 0.04, 800, 5000); },
-  win() {
-    [523, 659, 784, 1047, 784, 1047, 1319].forEach((f, i) => { tone(f, 0.28, 'triangle', 0.1, 0, i * 0.11); tone(f * 0.5, 0.28, 'square', 0.025, 0, i * 0.11); });
-    [1047, 1319, 1568].forEach(f => tone(f, 0.9, 'triangle', 0.06, 0, 0.8));
-  },
-  lose() { [392, 330, 262].forEach((f, i) => tone(f, 0.38, 'sawtooth', 0.06, -90, i * 0.3)); tone(196, 0.9, 'sawtooth', 0.06, -70, 0.9); },
-  cursor() { tone(880, 0.04, 'square', 0.03); },
-  select() { [660, 880, 1320].forEach((f, i) => tone(f, 0.09, 'square', 0.04, 0, i * 0.06)); },
-  back() { tone(440, 0.07, 'square', 0.03); tone(330, 0.08, 'square', 0.03, 0, 0.06); },
-  count() { tone(660, 0.12, 'square', 0.05); },
-  ready() { tone(660, 0.12, 'square', 0.05); },
-  go() { tone(1320, 0.4, 'square', 0.05); tone(1980, 0.35, 'triangle', 0.04, 0, 0.05); },
-};
-
-let jaVoice = null;
-function pickVoice() { try { jaVoice = speechSynthesis.getVoices().find(v => /^ja/i.test(v.lang)) || null; } catch (e) { } }
-try { if (window.speechSynthesis) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; } } catch (e) { }
-function speakTTS(txt, pitch, rate, vol) {
-  try {
-    const ss = window.speechSynthesis; if (!ss || typeof SpeechSynthesisUtterance === 'undefined') return;
-    const u = new SpeechSynthesisUtterance(txt);
-    u.lang = 'ja-JP'; if (jaVoice) u.voice = jaVoice;
-    u.pitch = Math.max(0, Math.min(2, pitch)); u.rate = Math.max(0.5, Math.min(2, rate)); u.volume = Math.max(0, Math.min(1, vol * settings.vol / 7));
-    ss.cancel(); ss.speak(u);
-  } catch (e) { }
-}
-function speak(key, txt, pitch = 1, rate = 1.1, vol = 1) {
-  if (!settings.voice || !settings.sound || settings.vol <= 0) return;
-  speakTTS(txt, pitch, rate, vol);
-}
-const KANA_N = ['', 'いち', 'に', 'さん', 'よん', 'ご', 'ろく', 'なな', 'はち', 'きゅう', 'じゅう'];
-function voicePitch(p) { return !p ? 1.1 : p.cpu ? 0.7 : p.idx === 0 ? 1.35 : 0.95; }
-function voiceSay(p, key, txt, rate = 1.1) { speak(key, txt, voicePitch(p), rate); }
-function voiceChain(p, n) {
-  if (n < 2) return;
-  const base = (n <= 10 ? KANA_N[n] : String(n)) + 'れんさ！';
-  const tail = n >= 10 ? 'ちょうすごーい！' : n >= 7 ? 'すごーい！' : n >= 4 ? 'ナイス！' : '';
-  speak(null, base + tail, voicePitch(p) + Math.min(0.3, n * 0.03), 1.05 + Math.min(0.45, n * 0.04));
-}
-
-function mulberry32(a) {
-  return function () {
-    a |= 0; a = a + 0x6D2B79F5 | 0;
-    let t = Math.imul(a ^ a >>> 15, 1 | a);
-    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-    return ((t ^ t >>> 14) >>> 0) / 4294967296;
-  };
-}
-class Sequence {
-  constructor(n) {
-    this.rnd = mulberry32((Math.random() * 4294967296) >>> 0);
-    this.pal = []; for (let i = 1; i <= n; i++) this.pal.push(i);
-    const early = this.shuffle(this.pal.slice()).slice(0, Math.min(3, n));
-    this.buf = this.shuffle([...early, ...early]);
-    this.list = [];
-  }
-  shuffle(a) {
-    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(this.rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
-    return a;
-  }
-  refill() {
-    const bag = []; for (const c of this.pal) for (let k = 0; k < 8; k++) bag.push(c);
-    this.buf = this.shuffle(bag);
-  }
-  get(i) {
-    while (this.list.length <= i) {
-      if (this.buf.length < 2) this.refill();
-      this.list.push([this.buf.pop(), this.buf.pop()]);
-    }
-    return this.list[i];
-  }
-}
-
-const ACTS = ['left', 'right', 'down', 'cw', 'ccw'];
-const ACT_LABEL = { left: '左へ移動', right: '右へ移動', down: '高速落下', cw: '右回転', ccw: '左回転' };
-const DEFAULT_BINDS = [
-  { left: ['ArrowLeft'], right: ['ArrowRight'], down: ['ArrowDown'], cw: ['ArrowUp', 'KeyX'], ccw: ['KeyZ'] },
-  { left: ['KeyA'], right: ['KeyD'], down: ['KeyS'], cw: ['KeyW', 'KeyE'], ccw: ['KeyQ'] },
-];
-const cloneBinds = b => JSON.parse(JSON.stringify(b));
-const BIND_KEY = 'ponyon_binds_v1';
-function loadBinds() {
-  try {
-    const j = JSON.parse(localStorage.getItem(BIND_KEY));
-    if (Array.isArray(j) && j.length === 2 && j.every(b => ACTS.every(a => Array.isArray(b[a]) && b[a].length && b[a].every(c => typeof c === 'string')))) return j;
-  } catch (e) { }
-  return cloneBinds(DEFAULT_BINDS);
-}
-function saveBinds() { try { localStorage.setItem(BIND_KEY, JSON.stringify(binds)); } catch (e) { } }
-let binds = loadBinds();
-let KEYMAP = {};
-function rebuildKeymap() {
-  KEYMAP = {};
-  binds.forEach((b, pi) => { for (const a of ACTS) for (const c of b[a]) KEYMAP[c] = [pi, a]; });
-}
-rebuildKeymap();
-const RESERVED = ['Escape', 'KeyP', 'KeyM', 'KeyV', 'Enter', 'Space', 'Backspace', 'Tab'];
-const KEYNAMES = { ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓' };
-function keyName(c) {
-  if (KEYNAMES[c]) return KEYNAMES[c];
-  if (/^Key[A-Z]$/.test(c)) return c.slice(3);
-  return c;
-}
-const bindStr = (pi, a) => binds[pi][a].map(keyName).join('・');
-function bindText(pi) {
-  return `${bindStr(pi, 'left')}${bindStr(pi, 'right')}移動 / ${bindStr(pi, 'down')}落下 / ${bindStr(pi, 'cw')}右回転 / ${bindStr(pi, 'ccw')}左回転`;
-}
-const KEY_ROWS = []; for (let pi = 0; pi < 2; pi++) for (const a of ACTS) KEY_ROWS.push([pi, a]);
-const KEY_N = KEY_ROWS.length + 3;
-
-const mk = () => ({ left: false, right: false, down: false });
-const kb = [mk(), mk()], padS = [mk(), mk()], held = [mk(), mk()];
-const padPrev = [{}, {}];
-let padInfo = [];
-let padObjs = [null, null];
-const padToast = { text: '', until: 0 };
-
-const game = {
-  scene: 'menu', players: [], over: false, paused: false, countdown: 0, frame: 0, wins: [0, 0], sel: 0,
-  keySel: 0, bindWait: false, shots: [], sparks: [], flash: 0, shake: 0, overT: 0, shock: [], optSel: 0, demo: null,
-  bubbles: Array.from({ length: 36 }, (_, i) => ({ x: (i * 97) % W, y: (i * 211) % H, r: 3 + (i % 5) * 2, s: 0.2 + (i % 7) * 0.08, ph: i })),
-};
-function toast(msg) { padToast.text = msg; padToast.until = game.frame + 240; }
-
-function rotate(i, d) {
-  const pl = game.players[settings.mode === 'vs' ? i : 0];
-  if (pl && pl.state === 'control' && pl.rotQ.length < 2) pl.rotQ.push(d);
-}
-const PREVENT = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space', 'Backspace', 'Tab'];
-window.addEventListener('keydown', e => {
-  if (PREVENT.includes(e.code) || KEYMAP[e.code]) e.preventDefault();
-  ensureAudio();
-  if (game.scene === 'keys') { keysKey(e); return; }
-  if (game.scene === 'opts') { optsKey(e); return; }
-  if (e.code === 'KeyM') { if (!e.repeat) { settings.sound = !settings.sound; saveSettings(); } return; }
-  if (e.code === 'KeyV') { if (!e.repeat) { settings.voice = !settings.voice; saveSettings(); toast('ボイス ' + (settings.voice ? 'ON' : 'OFF')); if (settings.voice) speak(null, 'ボイス、オン！', 1.2, 1.1); } return; }
-  if (game.scene === 'menu') { menuKey(e); return; }
-  if (e.code === 'KeyP' || e.code === 'Escape') { if (!e.repeat && !game.over) game.paused = !game.paused; return; }
-  if (game.paused) { if (e.code === 'Backspace') toMenu(); return; }
-  if (game.over) {
-    if (e.repeat) return;
-    if (e.code === 'Enter' || e.code === 'Space') continueAfterOver();
-    if (e.code === 'Backspace') toMenu();
-    return;
-  }
-  const m = KEYMAP[e.code]; if (!m) return;
-  const pi = settings.mode === 'vs' ? m[0] : 0, act = m[1];
-  if (act === 'cw' || act === 'ccw') { if (!e.repeat) rotate(pi, act === 'cw' ? 1 : -1); }
-  else kb[pi][act] = true;
-});
-window.addEventListener('keyup', e => {
-  const m = KEYMAP[e.code]; if (!m) return;
-  const pi = settings.mode === 'vs' ? m[0] : 0, act = m[1];
-  if (act === 'left' || act === 'right' || act === 'down') kb[pi][act] = false;
-});
-window.addEventListener('blur', () => { kb.forEach(k => { k.left = k.right = k.down = false; }); if (game.scene === 'play' && !game.over) game.paused = true; });
-document.addEventListener('visibilitychange', () => { if (document.hidden && game.scene === 'play' && !game.over) game.paused = true; });
-
-const MENU_N = 6;
-function menuKey(e) {
-  if (e.code === 'ArrowUp') { game.sel = (game.sel + MENU_N - 1) % MENU_N; sfx.cursor(); }
-  else if (e.code === 'ArrowDown') { game.sel = (game.sel + 1) % MENU_N; sfx.cursor(); }
-  else if (e.code === 'ArrowLeft') menuChange(-1);
-  else if (e.code === 'ArrowRight') menuChange(1);
-  else if ((e.code === 'Enter' || e.code === 'Space') && !e.repeat) {
-    sfx.select();
-    if (game.sel === 3) openOpts(); else if (game.sel === 4) openKeys(); else startGame(true);
-  }
-}
-function menuChange(d) {
-  const m = settings.mode;
-  switch (game.sel) {
-    case 0: settings.mode = MODES[(MODES.indexOf(m) + d + MODES.length) % MODES.length]; break;
-    case 1: if (m === 'cpu') settings.cpuLevel = 1 + ((settings.cpuLevel - 1 + d + 5) % 5); else settings.colors = 3 + ((settings.colors - 3 + d + 3) % 3); break;
-    case 2: settings.speed = (settings.speed + d + 3) % 3; break;
-    default: return;
-  }
-  sfx.cursor(); saveSettings();
-}
-
-const OPT_N = 10;
-function openOpts() { game.scene = 'opts'; game.optSel = 0; game.demo = { x: 0, vx: 0, rot: 0, ang: 0, angV: 0, c1: 1, c2: 3, pulse: 0, trail: [], visY: 0, t: 0 }; }
-function closeOpts() { game.scene = 'menu'; saveSettings(); }
-function optsKey(e) {
-  if (e.code === 'ArrowUp') { game.optSel = (game.optSel + OPT_N - 1) % OPT_N; sfx.cursor(); }
-  else if (e.code === 'ArrowDown') { game.optSel = (game.optSel + 1) % OPT_N; sfx.cursor(); }
-  else if (e.code === 'ArrowLeft') optsChange(-1);
-  else if (e.code === 'ArrowRight') optsChange(1);
-  else if ((e.code === 'Enter' || e.code === 'Space') && !e.repeat) { if (game.optSel === OPT_N - 1) { sfx.back(); closeOpts(); } else optsChange(1); }
-  else if ((e.code === 'Escape' || e.code === 'Backspace') && !e.repeat) { sfx.back(); closeOpts(); }
-}
-function optsChange(d) {
-  switch (game.optSel) {
-    case 0: settings.rotAnim = (settings.rotAnim + d + 3) % 3; break;
-    case 1: settings.fx = (settings.fx + d + 3) % 3; break;
-    case 2: settings.shake = !settings.shake; break;
-    case 3: settings.rumble = !settings.rumble; if (settings.rumble) rumble(0, 0.7, 250); break;
-    case 4: settings.das = (settings.das + d + 3) % 3; break;
-    case 5: settings.soft = (settings.soft + d + 3) % 3; break;
-    case 6: settings.guide = !settings.guide; break;
-    case 7: settings.sound = !settings.sound; break;
-    case 8: settings.vol = Math.max(0, Math.min(10, settings.vol + d)); applyVol(); break;
-    default: return;
-  }
-  sfx.cursor(); saveSettings();
-}
-function openKeys() { game.scene = 'keys'; game.keySel = 0; game.bindWait = false; }
-function closeKeys() { game.scene = 'menu'; game.bindWait = false; kb.forEach(k => { k.left = k.right = k.down = false; }); }
-function keysKey(e) {
-  if (game.bindWait) {
-    if (e.repeat) return;
-    if (e.code === 'Escape') { game.bindWait = false; return; }
-    if (RESERVED.includes(e.code)) { toast('このキーは割り当てできません'); return; }
-    const [pi, act] = KEY_ROWS[game.keySel], old = binds[pi][act].slice();
-    for (let p = 0; p < 2; p++) for (const a of ACTS) {
-      if ((p === pi && a === act)) continue;
-      if (binds[p][a].includes(e.code)) { binds[p][a] = binds[p][a].filter(c => c !== e.code); if (!binds[p][a].length) binds[p][a] = old.slice(0, 1); }
-    }
-    binds[pi][act] = [e.code];
-    rebuildKeymap(); saveBinds(); game.bindWait = false;
-    toast(`${pi + 1}P ${ACT_LABEL[act]} = ${keyName(e.code)}`);
-    return;
-  }
-  if (e.code === 'Escape' || e.code === 'Backspace') { closeKeys(); return; }
-  if (e.code === 'ArrowUp') game.keySel = (game.keySel + KEY_N - 1) % KEY_N;
-  else if (e.code === 'ArrowDown') game.keySel = (game.keySel + 1) % KEY_N;
-  else if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight') && game.keySel < KEY_ROWS.length) game.keySel = (game.keySel + 5) % 10;
-  else if ((e.code === 'Enter' || e.code === 'Space') && !e.repeat) {
-    if (game.keySel < KEY_ROWS.length) game.bindWait = true;
-    else if (game.keySel === 10) { binds = [binds[1], binds[0]]; rebuildKeymap(); saveBinds(); toast('1Pと2Pのキーを入れ替えました'); }
-    else if (game.keySel === 11) { binds = cloneBinds(DEFAULT_BINDS); rebuildKeymap(); saveBinds(); toast('初期設定に戻しました'); }
-    else closeKeys();
-  }
-}
-
-function padShortName(id) {
-  let n = String(id || 'Controller');
-  if (n.includes('(')) n = n.split('(')[0];
-  n = n.replace(/^[0-9a-f]{4}-[0-9a-f]{4}-/i, '').trim();
-  return n || 'Controller';
-}
-function readPad(gp) {
-  const id = String(gp.id || '').toLowerCase();
-  const std = gp.mapping === 'standard';
-  const b = n => !!(gp.buttons[n] && gp.buttons[n].pressed);
-  const ax = n => gp.axes[n] || 0;
-  let left = ax(0) < -0.5, right = ax(0) > 0.5, up = ax(1) < -0.5, down = ax(1) > 0.5;
-  let dl = false, dr = false, du = false, dd = false;
-  if (std || gp.buttons.length >= 16) { du = b(12); dd = b(13); dl = b(14); dr = b(15); }
-  let cwB = [1, 3], ccwB = [0, 2];
-  const face = cwB.some(b), faceCcw = ccwB.some(b);
-  return {
-    left: left || dl, right: right || dr, up: up || du, down: down || dd,
-    cw: face || b(5) || du, ccw: faceCcw || b(4),
-    confirm: b(cwB[0]), start: b(9) || b(16), select: b(8),
-  };
-}
-window.addEventListener('gamepadconnected', e => toast('コントローラー接続: ' + padShortName(e.gamepad.id)));
-window.addEventListener('gamepaddisconnected', e => {
-  toast('コントローラー切断: ' + padShortName(e.gamepad.id));
-  if (game.scene === 'play' && !game.over) game.paused = true;
-});
-function rumble(idx, mag, dur) {
-  if (!settings.rumble) return;
-  const arr = settings.mode === 'vs' ? [padObjs[idx]] : (idx === 1 ? [] : padObjs);
-  for (const gp of arr) {
-    try {
-      const va = gp && gp.vibrationActuator;
-      if (va && va.playEffect) va.playEffect('dual-rumble', { startDelay: 0, duration: dur, weakMagnitude: Math.min(1, mag * 0.7), strongMagnitude: Math.min(1, mag) });
-    } catch (e) { }
-  }
-}
-function pollPads() {
-  const raw = navigator.getGamepads ? navigator.getGamepads() : [];
-  const pads = [];
-  for (const g of (raw || [])) if (g && g.connected !== false) pads.push(g);
-  padInfo = pads.map(g => padShortName(g.id));
-  padObjs = [pads[0] || null, pads[1] || null];
-  for (let i = 0; i < 2; i++) { padS[i].left = padS[i].right = padS[i].down = false; }
-  pads.slice(0, 2).forEach((gp, i) => {
-    const r = readPad(gp), pv = padPrev[i];
-    const tgt = settings.mode === 'vs' ? i : 0;
-    const s = padS[tgt];
-    s.left = s.left || r.left; s.right = s.right || r.right; s.down = s.down || r.down;
-    const edge = k => r[k] && !pv[k];
-    if (r.start || r.cw || r.ccw || r.confirm) ensureAudio();
-    if (game.scene === 'menu') {
-      if (edge('up')) menuKey({ code: 'ArrowUp' });
-      if (edge('down')) menuKey({ code: 'ArrowDown' });
-      if (edge('left')) menuKey({ code: 'ArrowLeft' });
-      if (edge('right')) menuKey({ code: 'ArrowRight' });
-      if (edge('start') || edge('confirm')) menuKey({ code: 'Enter', repeat: false });
-    } else if (game.scene === 'opts') {
-      if (edge('up')) optsKey({ code: 'ArrowUp' });
-      if (edge('down')) optsKey({ code: 'ArrowDown' });
-      if (edge('left')) optsKey({ code: 'ArrowLeft' });
-      if (edge('right')) optsKey({ code: 'ArrowRight' });
-      if (edge('confirm')) optsKey({ code: 'Enter', repeat: false });
-      if (edge('select') || edge('start')) closeOpts();
-    } else if (game.scene === 'keys') {
-      if (edge('select') || edge('start')) closeKeys();
-    } else if (game.paused) {
-      if (edge('start')) game.paused = false;
-      if (edge('select')) toMenu();
-    } else if (game.over) {
-      if (edge('start') || (edge('confirm') && game.overT > 90)) continueAfterOver();
-      else if (edge('select')) toMenu();
-    } else {
-      if (edge('start')) game.paused = true;
-      if (edge('cw')) rotate(tgt, 1);
-      if (edge('ccw')) rotate(tgt, -1);
-    }
-    for (const k of ['up', 'down', 'left', 'right', 'cw', 'ccw', 'confirm', 'start', 'select']) pv[k] = r[k];
-  });
-}
-
-function hsl2hex(h, s = 1, l = 0.62) {
-  const a = s * Math.min(l, 1 - l);
-  const f = n => { const k = (n + h / 30) % 12; const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); return Math.round(255 * c).toString(16).padStart(2, '0'); };
-  return '#' + f(0) + f(8) + f(4);
-}
-function hexA(hex, a) {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
-}
-function chainColor(n) {
-  if (n >= 10) return hsl2hex((game.frame * 9) % 360);
-  return n >= 8 ? '#ff4de0' : n >= 6 ? '#ff5a5a' : n >= 4 ? '#ff9d2e' : n >= 2 ? '#ffe14d' : '#ffffff';
-}
-const CUT_TEXT = ['いい感じ!', 'ナイスチェイン!', 'すごい連鎖!!', '大連鎖!!!', '超連鎖!!!!'];
-const cutTier = n => n >= 10 ? 4 : n >= 8 ? 3 : n >= 6 ? 2 : n >= 4 ? 1 : 0;
-
-const wrapA = a => Math.atan2(Math.sin(a), Math.cos(a));
-function animPiece(p) {
-  const m = settings.rotAnim;
-  p.vx += (p.x - p.vx) * (m ? 0.55 : 1); if (Math.abs(p.x - p.vx) < 0.01) p.vx = p.x;
-  const tgt = p.rot * Math.PI / 2, d = wrapA(tgt - p.ang);
-  if (m === 0) { p.ang = tgt; p.angV = 0; }
-  else if (m === 1) { p.angV = d * 0.42; p.ang += p.angV; if (Math.abs(d) < 0.01) { p.ang = tgt; p.angV = 0; } }
-  else {
-    p.angV = (p.angV || 0) * 0.5 + d * 0.24; p.ang += p.angV;
-    if (Math.abs(d) < 0.004 && Math.abs(p.angV) < 0.004) { p.ang = tgt; p.angV = 0; }
-  }
-  p.pulse = (p.pulse || 0) * 0.8; p.visY = (p.visY || 0) * 0.7; if (Math.abs(p.visY) < 0.005) p.visY = 0;
-  if (m > 0) {
-    p.trail = p.trail || [];
-    if (Math.abs(d) > 0.25) p.trail.push({ a: p.ang, t: 0 });
-    for (const q of p.trail) q.t++;
-    p.trail = p.trail.filter(q => q.t < 7);
-  } else p.trail = [];
-}
-
-class Player {
-  constructor(idx, px, seq, vs) {
-    this.idx = idx; this.px = px; this.fx = px + 20; this.seq = seq; this.vs = vs; this.opp = null;
-    this.label = vs ? (idx === 0 ? 'PLAYER 1' : 'PLAYER 2') : 'SCORE ATTACK';
-    this.color = vs ? (idx === 0 ? '#ff7f8f' : '#6fc6ff') : '#ffd85a';
-    this.board = Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
-    this.state = 'wait'; this.piece = null; this.rotQ = [];
-    this.falling = []; this.erasing = []; this.pops = []; this.particles = []; this.rings = [];
-    this.score = 0; this.chain = 0; this.maxChain = 0; this.lastChain = 0; this.chainShowT = 0;
-    this.lastStep = null; this.totalErased = 0; this.carry = 0; this.pending = 0; this.sentTotal = 0;
-    this.zenkeshi = false; this.seqPos = 0; this.pieceCount = 0; this.timer = 0;
-    this.lastDir = 0; this.dasT = 0; this.lockT = 0; this.groundT = 0;
-    this.fallV = 0; this.fallMode = 'chain'; this.dead = false; this.result = null;
-    this.shake = 0; this.flashA = 0; this.flashC = '#ffffff'; this.glow = 0; this.glowN = 0;
-    this.freeze = 0; this.card = null; this.cutin = null; this.chainTotal = 0; this.barFlash = 0;
-    this.squash = new Map(); this.winFx = 0; this.cpu = null; this.danger = false;
-    this.emitters = []; this.bolts = []; this.waves = []; this.meteors = []; this.later = [];
-    this.speedMul = 1; this.showWins = vs; this.winText = null; this.loseText = null; this.spinCount = 0;
-  }
-
-  blocked(x, y) {
-    if (x < 0 || x >= COLS || y >= ROWS) return true;
-    if (y < 0) return false;
-    return this.board[y][x] !== 0;
-  }
-  fits(x, y, rot) {
-    const dx = OFFS[rot][0], dy = OFFS[rot][1];
-    const f = Math.floor(y + 1e-6), frac = y - f;
-    const rows = frac > 1e-6 ? [f, f + 1] : [f];
-    for (const r of rows) {
-      if (this.blocked(x, r) || this.blocked(x + dx, r + dy)) return false;
-    }
-    return true;
-  }
-  isResting() {
-    const p = this.piece, f = Math.floor(p.y + 1e-6);
-    if (p.y - f > 1e-6) return false;
-    return !this.fits(p.x, f + 1, p.rot);
-  }
-  fallSpeed() {
-    const base = [1 / 48, 1 / 32, 1 / 20][settings.speed];
-    const lvl = settings.mode === 'solo' ? Math.min(12, Math.floor(this.pieceCount / 10)) : 0;
-    return base * (1 + lvl * 0.15) * this.speedMul;
-  }
-  level() { return settings.mode === 'solo' ? Math.min(12, Math.floor(this.pieceCount / 10)) + 1 : 0; }
-
-  colHeight(c) { for (let r = 0; r < ROWS; r++) if (this.board[r][c]) return ROWS - r; return 0; }
-
-  spawn() {
-    if (this.board[1][2]) { this.die(); return; }
-    const pair = this.seq.get(this.seqPos++);
-    this.piece = { x: 2, y: 1, rot: 0, c1: pair[0], c2: pair[1], vx: 2, ang: 0, angV: 0, pulse: 0, visY: 0, trail: [] };
-    this.pieceCount++;
-    this.lockT = 0; this.groundT = 0; this.rotQ.length = 0; this.spinCount = 0;
-    const h = held[this.idx];
-    this.lastDir = (h.right ? 1 : 0) - (h.left ? 1 : 0); this.dasT = DAS_T[settings.das][0];
-    if (!this.cpu) sfx.spawn();
-    this.state = 'control';
-  }
-  die() {
-    this.state = 'dead'; this.dead = true; this.piece = null;
-    this.flashA = 0.85; this.flashC = '#ff3030'; this.shake = 20; rumble(this.idx, 1, 600);
-  }
-
-  tryMove(dir) {
-    const p = this.piece;
-    if (this.fits(p.x + dir, p.y, p.rot)) { p.x += dir; this.lockT = 0; if (!this.cpu) sfx.move(); return true; }
-    return false;
-  }
-  attempt(nr) {
-    const p = this.piece, dx = OFFS[nr][0], dy = OFFS[nr][1];
-    if (this.fits(p.x, p.y, nr)) { p.rot = nr; return true; }
-    if (this.fits(p.x - dx, p.y - dy, nr)) { const oy = p.y; p.x -= dx; p.y -= dy; p.visY = (p.visY || 0) + (oy - p.y); p.rot = nr; return true; }
-    return false;
-  }
-  tryRotate(d) {
-    const p = this.piece, nr = (p.rot + d + 4) % 4;
-    let ok = this.attempt(nr);
-    if (!ok && nr % 2 === 1) ok = this.attempt((p.rot + 2) % 4);
-    if (ok) { this.lockT = 0; p.pulse = 1; if (!this.cpu) sfx.rotate(); if (++this.spinCount > 24) this.groundT = GROUND_MAX; }
-  }
-  control() {
-    const p = this.piece, h = held[this.idx];
-    for (const d of this.rotQ) this.tryRotate(d);
-    this.rotQ.length = 0;
-
-    const dir = (h.right ? 1 : 0) - (h.left ? 1 : 0);
-    if (dir !== this.lastDir) { this.lastDir = dir; this.dasT = 0; if (dir) this.tryMove(dir); }
-    else if (dir) { this.dasT++; const dd = DAS_T[settings.das]; if (this.dasT >= dd[0] && (this.dasT - dd[0]) % dd[1] === 0) this.tryMove(dir); }
-
-    const down = h.down;
-    if (!this.isResting()) {
-      let v = this.fallSpeed(); if (down) v = Math.max(v, SOFT_T[settings.soft]);
-      const oldRow = Math.floor(p.y + 1e-6);
-      const ny = p.y + v;
-      if (this.fits(p.x, ny, p.rot)) p.y = ny; else p.y = Math.floor(ny + 1e-6);
-      const nr = Math.floor(p.y + 1e-6);
-      if (nr > oldRow) { if (this.spinCount <= 24) this.groundT = 0; if (down) this.score += nr - oldRow; }
-    }
-    if (this.isResting()) {
-      this.lockT++; this.groundT++;
-      if (this.lockT >= LOCK || this.groundT >= GROUND_MAX) this.lock();
-    } else this.lockT = 0;
-  }
-  guideY() {
-    const p = this.piece; let y = Math.floor(p.y + 1e-6);
-    while (this.fits(p.x, y + 1, p.rot)) y++;
-    return y;
-  }
-  lock() {
-    const p = this.piece, y = Math.round(p.y), dx = OFFS[p.rot][0], dy = OFFS[p.rot][1];
-    if (y >= 0) { this.board[y][p.x] = p.c1; this.squash.set(y * COLS + p.x, 9); }
-    if (y + dy >= 0) { this.board[y + dy][p.x + dx] = p.c2; this.squash.set((y + dy) * COLS + p.x + dx, 9); }
-    this.piece = null;
-    if (!this.cpu) sfx.lock();
-    this.startFall('chain');
-  }
-
-  startFall(mode) {
-    this.fallMode = mode; this.falling = [];
-    for (let c = 0; c < COLS; c++) {
-      let dest = ROWS - 1;
-      for (let r = ROWS - 1; r >= 0; r--) {
-        const v = this.board[r][c]; if (!v) continue;
-        if (r !== dest) { this.falling.push({ x: c, y: r, ty: dest, color: v }); this.board[r][c] = 0; }
-        dest--;
-      }
-    }
-    this.fallV = 0.1;
-    if (!this.falling.length) { this.afterFall(); return; }
-    this.state = 'fall';
-  }
-  updateFall() {
-    this.fallV = Math.min(0.8, this.fallV + 0.05);
-    let moving = false, landed = false;
-    for (const f of this.falling) {
-      if (f.done) continue;
-      f.y += this.fallV;
-      if (f.y >= f.ty) { f.y = f.ty; f.done = true; this.board[f.ty][f.x] = f.color; this.squash.set(f.ty * COLS + f.x, 9); landed = true; }
-      else moving = true;
-    }
-    if (!moving) {
-      this.falling = [];
-      if (this.fallMode === 'ojama') { sfx.land(); this.flashA = Math.max(this.flashA, 0.3); this.flashC = '#ff3030'; this.shake = Math.max(this.shake, 8); }
-      this.afterFall();
-    } else if (landed && this.fallMode === 'ojama') this.shake = Math.max(this.shake, 4);
-  }
-  afterFall() {
-    if (this.fallMode === 'ojama') { this.spawn(); return; }
-    this.state = 'gap'; this.timer = this.chain > 0 ? 8 : 1;
-  }
-
-  checkErase() {
-    const seen = new Uint8Array(ROWS * COLS), groups = [];
-    for (let r = 1; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-      const col = this.board[r][c];
-      if (col < 1 || col > 5 || seen[r * COLS + c]) continue;
-      const st = [[c, r]], cells = []; seen[r * COLS + c] = 1;
-      while (st.length) {
-        const [x, y] = st.pop(); cells.push([x, y]);
-        for (const [dx, dy] of OFFS) {
-          const nx = x + dx, ny = y + dy;
-          if (nx < 0 || nx >= COLS || ny < 1 || ny >= ROWS) continue;
-          if (seen[ny * COLS + nx] || this.board[ny][nx] !== col) continue;
-          seen[ny * COLS + nx] = 1; st.push([nx, ny]);
-        }
-      }
-      if (cells.length >= 4) groups.push({ color: col, cells });
-    }
-    if (!groups.length) { this.chainEnd(); return; }
-    this.startErase(groups);
-  }
-  startErase(groups) {
-    this.chain++;
-    const erase = [], key = new Set(), colors = new Set();
-    let cleared = 0, conn = 0, sx = 0, sy = 0;
-    for (const g of groups) {
-      cleared += g.cells.length; colors.add(g.color); conn += CONNECT[Math.min(g.cells.length, 11)];
-      for (const [x, y] of g.cells) { erase.push({ x, y, color: g.color }); key.add(y * COLS + x); sx += x; sy += y; }
-    }
-    for (const e of erase.slice()) {
-      for (const [dx, dy] of OFFS) {
-        const nx = e.x + dx, ny = e.y + dy;
-        if (nx < 0 || nx >= COLS || ny < 1 || ny >= ROWS) continue;
-        if (this.board[ny][nx] === OJAMA && !key.has(ny * COLS + nx)) { key.add(ny * COLS + nx); erase.push({ x: nx, y: ny, color: OJAMA }); }
-      }
-    }
-    const power = CHAIN_POWER[Math.min(this.chain - 1, CHAIN_POWER.length - 1)];
-    const mult = Math.max(1, Math.min(999, power + conn + COLOR_BONUS[colors.size - 1]));
-    let gain = 10 * cleared * mult, zb = 0;
-    if (this.zenkeshi) { zb = 2100; gain += zb; this.zenkeshi = false; }
-    this.score += gain; this.totalErased += cleared; this.chainTotal += gain;
-    this.lastStep = { cleared, mult, gain, zb };
-    this.lastChain = this.chain; this.maxChain = Math.max(this.maxChain, this.chain); this.chainShowT = 150;
-
-    const cxr = sx / cleared, cyr = sy / cleared;
-    for (const e of erase) { e.delay = Math.min(12, Math.round(Math.hypot(e.x - cxr, e.y - cyr) * 2.4)); e.popped = false; }
-    const cx = (cxr + 0.5) * CS, cy = (cyr + 0.5) * CS;
-
-    if (this.vs) {
-      const tot = gain + this.carry; let n = Math.floor(tot / OJAMA_RATE); this.carry = tot - n * OJAMA_RATE;
-      let offset = 0;
-      if (this.pending > 0) { const off = Math.min(n, this.pending); this.pending -= off; n -= off; offset += off; }
-      for (const s of game.shots) { if (s.tgt === this && n > 0 && s.n > 0) { const off = Math.min(n, s.n); s.n -= off; n -= off; offset += off; } }
-      if (offset > 0) { this.pops.push({ text: '相殺!', x: FIELD_W / 2, y: FIELD_H * 0.16, t: 0, life: 70, size: 34, chain: 3, col: '#7fe8ff' }); this.barFlash = 24; sfx.offset(); voiceSay(this, null, 'そうさい！'); }
-      if (n > 0 && this.opp) {
-        game.shots.push({ x0: this.fx + cx, y0: FY + cy, x1: this.opp.fx + FIELD_W / 2, y1: 55, t: 0, dur: 38, n, tgt: this.opp, from: this, trail: [], x: this.fx + cx, y: FY + cy });
-        this.sentTotal += n; sfx.shot();
-      }
-    }
-
-    const ch = this.chain;
-    this.pops.push({ text: '+' + gain, x: cx, y: cy + 34, t: 0, life: 60, size: 18, chain: 0 });
-    if (ch >= 2) this.pops.push({ text: ch + '連鎖!', x: cx, y: cy, t: 0, life: 85, size: 34 + Math.min(ch, 10) * 3, chain: ch });
-    if (zb) this.pops.push({ text: '全消しボーナス +2100', x: FIELD_W / 2, y: FIELD_H * 0.35, t: 0, life: 100, size: 22, chain: 9 });
-    const fk = FXK();
-    this.shake = Math.max(this.shake, Math.min(16, 3 + ch * 1.6) * fk);
-    this.flashA = Math.min(0.7, (0.12 + ch * 0.07) * Math.min(1, fk)); this.flashC = '#ffffff';
-    this.chainAnim(ch, cx, cy); voiceChain(this, ch);
-    this.glow = Math.min(1, 0.35 + ch * 0.1); this.glowN = ch;
-    if (ch >= 3) this.freeze = 3 + Math.min(ch, 10);
-    if (ch >= 3) {
-      this.cutin = { t: 0, chain: ch, color: groups[0].color, life: ch >= 4 ? 44 : 32 };
-      sfx.cutin(cutTier(ch));
-    }
-    if (ch >= 5) game.flash = Math.max(game.flash, 0.3 * Math.min(1, fk));
-    if (ch >= 6) game.shake = Math.max(game.shake, Math.min(12, ch) * fk);
-    rumble(this.idx, Math.min(1, 0.25 + ch * 0.1), 120 + ch * 30);
-    sfx.erase(ch);
-    this.erasing = erase; this.state = 'erase'; this.timer = 0;
-  }
-  popBurst(e) {
-    const x = (e.x + 0.5) * CS, y = (e.y + 0.5) * CS;
-    const col = e.color === OJAMA ? '#d6d9e8' : PAL[e.color].m, ch = this.chain;
-    for (let i = 0, n = Math.max(2, Math.round(7 * FXK())); i < n; i++) {
-      const a = Math.random() * Math.PI * 2, s = 1.5 + Math.random() * 3.2;
-      this.particles.push({ k: 'c', x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 2, life: 28 + Math.random() * 10, max: 38, color: col, r: 4 + Math.random() * 4, rot: 0, vr: 0, g: 0.25 });
-    }
-    if (ch >= 2) for (let i = 0; i < 3; i++) {
-      const a = Math.random() * Math.PI * 2, s = 2 + Math.random() * 4;
-      this.particles.push({ k: 's', x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 2.5, life: 36, max: 36, color: ch >= 6 ? '#ffffff' : col, r: 7 + Math.random() * 7, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4, g: 0.18 });
-    }
-    if (ch >= 4) for (let i = 0; i < 3; i++) {
-      const a = Math.random() * Math.PI * 2, s = 3 + Math.random() * 5;
-      this.particles.push({ k: 'k', x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 26, max: 26, color: '#fff7c0', r: 8 + Math.random() * 8, rot: 0, vr: 0.2, g: 0.05 });
-    }
-    this.rings.push({ x, y, t: 0, life: 18 + Math.min(ch, 8), color: col, r1: 46 + ch * 4 });
-    if (Math.random() < 0.5) sfx.pop();
-  }
-  confetti(n) {
-    const cols = ['#ff4a55', '#3fd45f', '#4a7dff', '#ffd531', '#b65cff', '#ffffff'];
-    for (let i = 0; i < n; i++) {
-      this.particles.push({ k: 'f', x: Math.random() * FIELD_W, y: -10 - Math.random() * 60, vx: (Math.random() - 0.5) * 3, vy: 1 + Math.random() * 3, life: 130 + Math.random() * 40, max: 150, color: cols[i % cols.length], r: 5 + Math.random() * 4, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4, g: 0.06 });
-    }
-  }
-  updateErase() {
-    this.timer++;
-    for (const e of this.erasing) {
-      if (!e.popped && this.timer >= ERASE_BASE + e.delay) { e.popped = true; this.popBurst(e); }
-    }
-    if (this.timer < ERASE_T) return;
-    for (const e of this.erasing) this.board[e.y][e.x] = 0;
-    this.erasing = [];
-    this.startFall('chain');
-  }
-  boardEmpty() {
-    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if (this.board[r][c]) return false;
-    return true;
-  }
-  chainEnd() {
-    if (this.chain >= 3) this.card = { t: 0, life: 135, chain: this.chain, total: this.chainTotal };
-    if (this.chain > 0 && this.boardEmpty()) {
-      this.zenkeshi = true;
-      this.pops.push({ text: 'ぜんけし!', x: FIELD_W / 2, y: FIELD_H * 0.5, t: 0, life: 130, size: 56, chain: 10 });
-      this.cutin = { t: 0, chain: 0, color: 4, life: 66, zen: true };
-      this.confetti(Math.round(90 * FXK())); this.flashA = 0.7; this.flashC = '#ffe14d'; game.flash = Math.max(game.flash, 0.35);
-      sfx.zenkeshi(); sfx.cutin(3); rumble(this.idx, 0.9, 500); voiceSay(this, null, 'ぜんけし！', 1.2);
-    }
-    this.chainTotal = 0; this.chain = 0;
-    if (this.vs && this.pending > 0 && !(this.opp && this.opp.chain > 0)) { this.dropOjama(); return; }
-    this.spawn();
-  }
-  dropOjama() {
-    const n = Math.min(30, this.pending); this.pending -= n;
-    const rows = Math.floor(n / COLS), rem = n % COLS, cols = [0, 1, 2, 3, 4, 5];
-    for (let i = cols.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [cols[i], cols[j]] = [cols[j], cols[i]]; }
-    const extra = new Set(cols.slice(0, rem));
-    this.falling = [];
-    for (let c = 0; c < COLS; c++) {
-      let h = 0; for (let r = ROWS - 1; r >= 0 && this.board[r][c]; r--) h++;
-      const k = rows + (extra.has(c) ? 1 : 0);
-      for (let m = 0; m < k; m++) {
-        const ty = ROWS - 1 - h - m; if (ty < 0) continue;
-        this.falling.push({ x: c, y: -1.5 - m * 1.1 - Math.random() * 1.5, ty, color: OJAMA });
-      }
-    }
-    if (n >= 12) voiceSay(this, null, 'うわっ！');
-    this.fallMode = 'ojama'; this.fallV = 0.15; sfx.ojama(); rumble(this.idx, Math.min(1, 0.3 + n * 0.03), 250);
-    if (!this.falling.length) { this.spawn(); return; }
-    this.state = 'fall';
-  }
-
-  after(frames, fn) { this.later.push({ t: frames, fn }); }
-  chainAnim(ch, cx, cy) {
-    const k = FXK(), cc = chainColor(ch), N = n => Math.max(1, Math.round(n * k));
-    if (ch >= 2) {
-      const n = N(10 + ch * 2);
-      for (let i = 0; i < n; i++) {
-        const a = i / n * Math.PI * 2, sp = 2.2 + (i % 3) * 0.5;
-        this.particles.push({ k: 'k', x: cx, y: cy, vx: Math.cos(a) * sp - Math.sin(a) * 2.4, vy: Math.sin(a) * sp + Math.cos(a) * 2.4, life: 34, max: 34, color: i % 2 ? '#ffffff' : cc, r: 9 + (i % 4) * 2, rot: a, vr: 0.25, g: 0 });
-      }
-    }
-    if (ch >= 3) {
-      for (let s = 0; s < Math.min(4, ch - 1); s++) this.after(6 + s * 7, () => {
-        const fx = 30 + Math.random() * (FIELD_W - 60), fy = FIELD_H * (0.12 + Math.random() * 0.3), cols = [cc, '#ffffff', '#ffe14d'];
-        this.rings.push({ x: fx, y: fy, t: 0, life: 16, color: cc, r1: 50 });
-        const n = N(22);
-        for (let i = 0; i < n; i++) {
-          const a = i / n * Math.PI * 2 + Math.random() * 0.2, sp = 2 + Math.random() * 3.2;
-          this.particles.push({ k: i % 3 === 0 ? 's' : 'c', x: fx, y: fy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 40, max: 40, color: cols[i % 3], r: 4 + Math.random() * 4, rot: 0, vr: 0.2, g: 0.1 });
-        }
-      });
-    }
-    if (ch >= 4) {
-      const cols = [0, 1, 2, 3, 4, 5].sort(() => Math.random() - 0.5).slice(0, Math.min(COLS, ch - 1));
-      cols.forEach((c, i) => this.after(i * 3, () => this.emitters.push({ x: c * CS + CS / 2, t: 0, life: 30, color: cc })));
-    }
-    if (ch >= 5) {
-      const n = ch >= 11 ? 3 : ch >= 8 ? 2 : 1;
-      for (let i = 0; i < n; i++) this.after(i * 5, () => {
-        const pts = [], x0 = 20 + Math.random() * (FIELD_W - 40);
-        for (let j = 0; j <= 7; j++) { const u = j / 7; pts.push([x0 + (cx - x0) * u + (j && j < 7 ? (Math.random() - 0.5) * 46 : 0), -10 + (cy + 10) * u]); }
-        this.bolts.push({ pts, t: 0, life: 12, color: cc });
-        this.shake = Math.max(this.shake, 6);
-      });
-    }
-    if (ch >= 6) {
-      const n = Math.min(8, ch - 3);
-      for (let i = 0; i < n; i++) this.after(i * 4, () => this.meteors.push({ x: -20 + Math.random() * FIELD_W * 0.7, y: -30, vx: 5 + Math.random() * 3, vy: 11 + Math.random() * 4, t: 0, life: 34, color: cc }));
-    }
-    if (ch >= 8) this.waves.push({ t: 0, life: 50 });
-    if (ch >= 10) game.shock.push({ x: this.fx + FIELD_W / 2, y: FY + cy, t: 0, life: 44, color: cc });
-  }
-  drawChainFx() {
-    for (const w of this.waves) {
-      const k = w.t / w.life, y = FIELD_H * (1 - k) - 20;
-      const g = ctx.createLinearGradient(0, y - 40, 0, y + 40);
-      const a = Math.sin(Math.PI * k) * 0.55;
-      for (let i = 0; i <= 6; i++) g.addColorStop(i / 6, hexA(hsl2hex(i * 60 + w.t * 8), i === 0 || i === 6 ? 0 : a));
-      ctx.fillStyle = g; ctx.fillRect(0, y - 40, FIELD_W, 80);
-    }
-    for (const b of this.bolts) {
-      const a = 1 - b.t / b.life; ctx.save(); ctx.globalAlpha = a * (b.t % 2 ? 0.6 : 1); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-      ctx.shadowColor = b.color; ctx.shadowBlur = 18;
-      for (const [lw, col] of [[7, b.color], [2.5, '#ffffff']]) {
-        ctx.lineWidth = lw; ctx.strokeStyle = col; ctx.beginPath();
-        b.pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
-      }
-      ctx.restore();
-    }
-    for (const m of this.meteors) {
-      const g = ctx.createLinearGradient(m.x, m.y, m.x - m.vx * 5, m.y - m.vy * 5);
-      g.addColorStop(0, '#ffffff'); g.addColorStop(1, hexA(m.color, 0));
-      ctx.strokeStyle = g; ctx.lineWidth = 5; ctx.lineCap = 'round';
-      ctx.beginPath(); ctx.moveTo(m.x, m.y); ctx.lineTo(m.x - m.vx * 5, m.y - m.vy * 5); ctx.stroke();
-      ctx.fillStyle = '#fff'; circle(m.x, m.y, 4);
-    }
-  }
-  updateChainFx() {
-    for (const l of this.later) l.t--;
-    const due = this.later.filter(l => l.t <= 0); this.later = this.later.filter(l => l.t > 0);
-    for (const l of due) l.fn();
-    for (const e of this.emitters) {
-      e.t++;
-      for (let i = 0; i < 3; i++) this.particles.push({ k: Math.random() < 0.3 ? 's' : 'c', x: e.x + (Math.random() - 0.5) * CS * 0.6, y: FIELD_H - Math.random() * 10, vx: (Math.random() - 0.5) * 1.2, vy: -(3 + Math.random() * 4), life: 24, max: 24, color: ['#ff5a2a', '#ffb02a', '#ffe86a', e.color][i], r: 6 + Math.random() * 6, rot: Math.random() * 6, vr: 0.2, g: -0.03 });
-    }
-    this.emitters = this.emitters.filter(e => e.t < e.life);
-    for (const b of this.bolts) b.t++;
-    this.bolts = this.bolts.filter(b => b.t < b.life);
-    for (const m of this.meteors) {
-      m.x += m.vx; m.y += m.vy; m.t++;
-      this.particles.push({ k: 'c', x: m.x, y: m.y, vx: (Math.random() - 0.5), vy: (Math.random() - 0.5), life: 14, max: 14, color: m.color, r: 3 + Math.random() * 3, rot: 0, vr: 0, g: 0 });
-      if (m.t >= m.life || m.y > FIELD_H) {
-        m.t = 999;
-        for (let i = 0; i < 6; i++) { const a = Math.random() * Math.PI * 2, sp = 1 + Math.random() * 3; this.particles.push({ k: 'c', x: m.x, y: Math.min(m.y, FIELD_H), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 1, life: 22, max: 22, color: '#ffffff', r: 3 + Math.random() * 3, rot: 0, vr: 0, g: 0.15 }); }
-      }
-    }
-    this.meteors = this.meteors.filter(m => m.t < 999);
-    for (const w of this.waves) w.t++;
-    this.waves = this.waves.filter(w => w.t < w.life);
-  }
-  update(active) {
-    if (this.freeze > 0) this.freeze--;
-    else if (active) {
-      switch (this.state) {
-        case 'control': this.control(); break;
-        case 'fall': this.updateFall(); break;
-        case 'gap': if (--this.timer <= 0) this.checkErase(); break;
-        case 'erase': this.updateErase(); break;
-      }
-    }
-    for (const p of this.pops) p.t++;
-    this.pops = this.pops.filter(p => p.t < p.life);
-    for (const q of this.particles) { q.x += q.vx; q.y += q.vy; q.vy += q.g; q.rot += q.vr; q.life--; }
-    this.particles = this.particles.filter(q => q.life > 0);
-    for (const r of this.rings) r.t++;
-    this.rings = this.rings.filter(r => r.t < r.life);
-    if (this.chainShowT > 0 && this.chain === 0) this.chainShowT--;
-    this.danger = this.state === 'control' && this.colHeight(2) >= 10;
-    if (this.danger && !this.cpu && game.frame % 45 === 0) sfx.warn();
-    this.flashA *= 0.9; if (this.flashA < 0.01) this.flashA = 0;
-    this.shake *= 0.86; if (this.shake < 0.3) this.shake = 0;
-    if (this.chain === 0 && this.state !== 'erase') { this.glow *= 0.96; if (this.glow < 0.01) this.glow = 0; }
-    if (this.barFlash > 0) this.barFlash--;
-    if (this.cutin && ++this.cutin.t >= this.cutin.life) this.cutin = null;
-    if (this.card && ++this.card.t >= this.card.life) this.card = null;
-    for (const [k, v] of this.squash) { if (v <= 1) this.squash.delete(k); else this.squash.set(k, v - 1); }
-    if (this.state === 'won' && game.frame % 2 === 0) this.confetti(3);
-    this.updateChainFx();
-    if (this.piece) animPiece(this.piece);
-  }
-}
-
-// CPU思考AI
-const CPU_LV = [null,
-  { name: 'かんたん',   react: 45, act: 10, soft: false, mist: 0.30, look: 0, pot: 0,   conn: 1.0, thr: 1, bump: 2 },
-  { name: 'ふつう',     react: 30, act: 7,  soft: true,  mist: 0.12, look: 0, pot: 0.5, conn: 1.5, thr: 2, bump: 3 },
-  { name: 'むずかしい', react: 16, act: 4,  soft: true,  mist: 0.04, look: 3, pot: 1,   conn: 1.5, thr: 3, bump: 3 },
-  { name: 'つよい',     react: 8,  act: 3,  soft: true,  mist: 0.01, look: 5, pot: 1.5, conn: 1.5, thr: 4, bump: 3 },
-  { name: '超つよい',   react: 3,  act: 2,  soft: true,  mist: 0,    look: 7, pot: 2,   conn: 1.5, thr: 5, bump: 3 },
-];
-const cloneBoard = b => b.map(r => r.slice());
-function colHeightsOf(b) {
-  const h = new Array(COLS).fill(0);
-  for (let c = 0; c < COLS; c++) for (let r = 0; r < ROWS; r++) if (b[r][c]) { h[c] = ROWS - r; break; }
-  return h;
-}
-function findGroupsOf(b, minSize) {
-  const seen = new Uint8Array(ROWS * COLS), groups = [];
-  for (let r = 1; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-    const col = b[r][c]; if (col < 1 || col > 5 || seen[r * COLS + c]) continue;
-    const st = [[c, r]], cells = []; seen[r * COLS + c] = 1;
-    while (st.length) {
-      const [x, y] = st.pop(); cells.push([x, y]);
-      for (const [dx, dy] of OFFS) {
-        const nx = x + dx, ny = y + dy;
-        if (nx < 0 || nx >= COLS || ny < 1 || ny >= ROWS) continue;
-        if (seen[ny * COLS + nx] || b[ny][nx] !== col) continue;
-        seen[ny * COLS + nx] = 1; st.push([nx, ny]);
-      }
-    }
-    if (cells.length >= minSize) groups.push({ color: col, cells });
-  }
-  return groups;
-}
-function compactBoard(b) {
-  for (let c = 0; c < COLS; c++) {
-    let w = ROWS - 1;
-    for (let r = ROWS - 1; r >= 0; r--) { const v = b[r][c]; if (v) { if (r !== w) { b[w][c] = v; b[r][c] = 0; } w--; } }
-  }
-}
-function simResolve(b) {
-  let chain = 0, score = 0, cleared = 0;
-  for (;;) {
-    const groups = findGroupsOf(b, 4); if (!groups.length) break;
-    chain++;
-    const colors = new Set(); let n = 0, conn = 0; const kill = [];
-    for (const g of groups) { colors.add(g.color); n += g.cells.length; conn += CONNECT[Math.min(g.cells.length, 11)]; for (const c of g.cells) kill.push(c); }
-    const oj = [];
-    for (const [x, y] of kill) for (const [dx, dy] of OFFS) { const nx = x + dx, ny = y + dy; if (nx < 0 || nx >= COLS || ny < 1 || ny >= ROWS) continue; if (b[ny][nx] === OJAMA) oj.push([nx, ny]); }
-    for (const [x, y] of kill) b[y][x] = 0;
-    for (const [x, y] of oj) b[y][x] = 0;
-    const mult = Math.max(1, Math.min(999, CHAIN_POWER[Math.min(chain - 1, CHAIN_POWER.length - 1)] + conn + COLOR_BONUS[colors.size - 1]));
-    score += 10 * n * mult; cleared += n; compactBoard(b);
-  }
-  return { chain, score, cleared };
-}
-function placePair(b, x, rot, c1, c2) {
-  if ((rot === 1 && x > COLS - 2) || (rot === 3 && x < 1)) return false;
-  const h = colHeightsOf(b);
-  const put = (col, color) => { const r = ROWS - 1 - h[col]; if (r < 0) return; b[r][col] = color; h[col]++; };
-  if (rot === 0) { put(x, c1); put(x, c2); }
-  else if (rot === 2) { put(x, c2); put(x, c1); }
-  else if (rot === 1) { put(x, c1); put(x + 1, c2); }
-  else { put(x, c1); put(x - 1, c2); }
-  return true;
-}
-function reachable(b, x, rot) {
-  for (let c = Math.min(2, x); c <= Math.max(2, x); c++) if (b[1][c] || b[0][c]) return false;
-  if (rot === 1 && b[1][x + 1]) return false;
-  if (rot === 3 && b[1][x - 1]) return false;
-  return true;
-}
-function chainPotential(b) {
-  let best = 0; const h = colHeightsOf(b);
-  for (let color = 1; color <= settings.colors; color++) for (let c = 0; c < COLS; c++) {
-    if (h[c] >= ROWS - 2) continue;
-    const t = cloneBoard(b); t[ROWS - 1 - h[c]][c] = color;
-    const r = simResolve(t);
-    if (r.chain >= 2) { const v = r.chain * r.chain * 35 + Math.min(r.score, 30000) / 25; if (v > best) best = v; }
-  }
-  return best;
-}
-function evalBoard(b, lv, withPot) {
-  if (b[1][2]) return -1e7;
-  const h = colHeightsOf(b); let s = 0;
-  for (let c = 0; c < COLS; c++) if (h[c] > 8) s -= (h[c] - 8) * (h[c] - 8) * 40;
-  if (h[2] >= 9) s -= 600 * (h[2] - 8);
-  for (let c = 0; c < COLS - 1; c++) s -= Math.abs(h[c] - h[c + 1]) * lv.bump;
-  for (const g of findGroupsOf(b, 2)) s += (g.cells.length === 2 ? 2 : 8) * lv.conn;
-  if (withPot && lv.pot > 0) s += lv.pot * chainPotential(b);
-  return s;
-}
-function candScore(res, b, lv, thr, withPot) {
-  if (b[1][2]) return -1e7;
-  const ev = evalBoard(b, lv, withPot);
-  if (res.chain > 0) {
-    if (res.chain >= thr || lv.thr === 1) return 1e4 + res.score * 0.5 + ev * 0.3;
-    return ev - 500 - res.cleared * 8 + res.score * 0.01;
-  }
-  return ev;
-}
-function cpuPlan(p) {
-  const lv = p.cpu.lv, pc = p.piece, b0 = p.board;
-  const hs = colHeightsOf(b0), maxH = Math.max(...hs);
-  let thr = lv.thr;
-  if (maxH >= 9 || hs[2] >= 8) thr = 1;
-  else if (p.pending >= 6) thr = Math.min(thr, 2);
-  const next = p.seq.get(p.seqPos);
-  const cands = [];
-  for (let rot = 0; rot < 4; rot++) for (let x = 0; x < COLS; x++) {
-    const b = cloneBoard(b0);
-    if (!placePair(b, x, rot, pc.c1, pc.c2) || !reachable(b0, x, rot)) continue;
-    const res = simResolve(b);
-    cands.push({ x, rot, b, v: candScore(res, b, lv, thr, true), fired: res.chain > 0 && (res.chain >= thr || lv.thr === 1) });
-  }
-  if (!cands.length) return { x: pc.x, rot: pc.rot };
-  cands.sort((a, b) => b.v - a.v);
-  if (lv.look > 0) {
-    const K = Math.min(lv.look, cands.length);
-    for (let i = 0; i < K; i++) {
-      const c = cands[i]; if (c.v <= -1e6 || c.fired) continue;
-      let best = -1e7;
-      for (let rot = 0; rot < 4; rot++) for (let x = 0; x < COLS; x++) {
-        const b = cloneBoard(c.b);
-        if (!placePair(b, x, rot, next[0], next[1])) continue;
-        const v = candScore(simResolve(b), b, lv, thr, false);
-        if (v > best) best = v;
-      }
-      c.v += 0.5 * best;
-    }
-    cands.sort((a, b) => b.v - a.v);
-  }
-  let pick = cands[0];
-  if (Math.random() < lv.mist) { const pool = cands.filter(c => c.v > -1e6).slice(0, 5); if (pool.length) pick = pool[Math.floor(Math.random() * pool.length)]; }
-  return { x: pick.x, rot: pick.rot };
-}
-Player.prototype.cpuStep = function () {
-  const c = this.cpu, h = held[this.idx], lv = c.lv;
-  h.left = h.right = h.down = false;
-  if (this.state !== 'control' || !this.piece) { c.piece = null; return; }
-  const p = this.piece;
-  if (c.piece !== p) { c.piece = p; c.wait = lv.react; c.plan = null; c.cool = 0; c.stuck = 0; c.lastX = -1; c.rotTries = 0; }
-  if (c.wait > 0) { c.wait--; return; }
-  if (!c.plan) c.plan = cpuPlan(this);
-  const pl = c.plan;
-  if (c.cool > 0) { c.cool--; return; }
-  if (p.rot !== pl.rot) {
-    if (++c.rotTries > 5) { pl.rot = p.rot; pl.x = p.x; return; }
-    const d = (pl.rot - p.rot + 4) % 4; this.rotQ.push(d === 3 ? -1 : 1); c.cool = lv.act; return; }
-  if (p.x !== pl.x) {
-    if (c.lastX === p.x) { if (++c.stuck > 4) { pl.x = p.x; return; } } else c.stuck = 0;
-    c.lastX = p.x;
-    if (p.x < pl.x) h.right = true; else h.left = true;
-    c.cool = lv.act; return;
-  }
-  if (lv.soft) h.down = true;
-};
-
-function startGame(fromMenu) {
-  const mode = settings.mode;
-  if (fromMenu) {
-    game.wins = [0, 0];
-    saveSettings();
-  }
-  game.shock = [];
-  let ps;
-  const duel = (seq, lvObj) => {
-    const a = new Player(0, 70, seq, true), b = new Player(1, 550, seq, true);
-    a.opp = b; b.opp = a;
-    if (lvObj) b.cpu = { lv: lvObj, piece: null, plan: null, wait: 0, cool: 0, stuck: 0, lastX: -1 };
-    return [a, b];
-  };
-  if (mode === 'vs') ps = duel(new Sequence(settings.colors), null);
-  else if (mode === 'cpu') {
-    const lv = CPU_LV[settings.cpuLevel];
-    ps = duel(new Sequence(settings.colors), lv);
-    ps[1].label = 'CPU ' + lv.name; ps[1].color = '#8fe8a8';
-  } else ps = [new Player(0, 310, new Sequence(settings.colors), false)];
-  game.players = ps;
-  game.scene = 'play'; game.over = false; game.paused = false; game.countdown = 150;
-  game.shots = []; game.sparks = []; game.flash = 0; game.shake = 0;
-  sfx.ready(); speak(null, 'よーい', 1.1, 1);
-}
-function continueAfterOver() {
-  startGame(false);
-}
-function toMenu() { game.scene = 'menu'; game.players = []; game.paused = false; game.over = false; game.shots = []; game.sparks = []; }
-
-function updateShots() {
-  for (const s of game.shots) {
-    s.t++;
-    const k = Math.min(1, s.t / s.dur), e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
-    const cxp = (s.x0 + s.x1) / 2, cyp = Math.min(s.y0, s.y1) - 170;
-    s.x = (1 - e) * (1 - e) * s.x0 + 2 * (1 - e) * e * cxp + e * e * s.x1;
-    s.y = (1 - e) * (1 - e) * s.y0 + 2 * (1 - e) * e * cyp + e * e * s.y1;
-    s.trail.push([s.x, s.y]); if (s.trail.length > 18) s.trail.shift();
-    if (s.t >= s.dur) {
-      s.done = true;
-      if (s.n > 0) {
-        s.tgt.pending += s.n; s.tgt.barFlash = 28; s.tgt.shake = Math.max(s.tgt.shake, 6);
-        sfx.hit(); rumble(s.tgt.idx, Math.min(1, 0.3 + s.n * 0.02), 200);
-        for (let i = 0; i < 18; i++) { const a = Math.random() * Math.PI * 2, v = 2 + Math.random() * 5; game.sparks.push({ x: s.x1, y: s.y1, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 26, max: 26, r: 3 + Math.random() * 4, color: '#ffb0b0' }); }
-      }
-    }
-  }
-  game.shots = game.shots.filter(s => !s.done);
-  for (const q of game.sparks) { q.x += q.vx; q.y += q.vy; q.vy += 0.15; q.life--; }
-  game.sparks = game.sparks.filter(q => q.life > 0);
-}
-
-function step() {
-  game.frame++;
-  game.overT = game.over ? game.overT + 1 : 0;
-  pollPads();
-  for (let i = 0; i < 2; i++) for (const k of ['left', 'right', 'down']) held[i][k] = kb[i][k] || padS[i][k];
-  game.flash *= 0.88; if (game.flash < 0.01) game.flash = 0;
-  game.shake *= 0.88; if (game.shake < 0.3) game.shake = 0;
-  if (game.scene === 'opts' && game.demo) {
-    const d = game.demo; d.t++;
-    if (d.t % 50 === 0) { d.rot = (d.rot + 1) % 4; d.pulse = 1; }
-    animPiece(d);
-  }
-  if (game.scene !== 'play' || game.paused) return;
-  for (const sh of game.shock) sh.t++;
-  game.shock = game.shock.filter(sh => sh.t < sh.life);
-  if (game.countdown > 0) {
-    game.countdown--;
-    if (game.countdown === 60) { sfx.go(); speak(null, 'スタート！', 1.2, 1.2); game.players.forEach(p => p.spawn()); }
-    else if (game.countdown === 105 || game.countdown === 80) sfx.count();
-  }
-  const ps = game.players;
-  for (const p of ps) if (p.cpu && !game.over) p.cpuStep();
-  for (const p of ps) p.update(!game.over);
-  updateShots();
-  if (!game.over) {
-    if (ps.length === 2) {
-      const dead = ps.filter(p => p.dead);
-      if (dead.length) {
-        game.over = true;
-        if (dead.length === 2) { ps.forEach(p => { p.result = 'draw'; }); sfx.lose(); }
-        else {
-          const w = ps.find(p => !p.dead), l = dead[0];
-          w.result = 'win'; w.state = 'won'; l.result = 'lose'; game.wins[w.idx]++; sfx.win();
-          w.confetti(Math.round(120 * FXK())); w.flashA = 0.5; w.flashC = '#ffe14d';
-          voiceSay(w, null, 'かったー！', 1.15);
-        }
-      }
-    } else {
-      const p = ps[0];
-      if (p.dead) {
-        game.over = true; p.result = 'lose'; sfx.lose();
-        voiceSay(p, null, 'ゲームオーバー', 0.95);
-      }
-    }
-  }
-}
-
-function rr(x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-  ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-  ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
-  ctx.closePath();
-}
-function circle(x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); }
-function starPath(x, y, r, rot, pts = 5, inner = 0.45) {
-  ctx.beginPath();
-  for (let i = 0; i < pts * 2; i++) {
-    const a = rot + i * Math.PI / pts - Math.PI / 2, rad = i % 2 ? r * inner : r;
-    if (i) ctx.lineTo(x + Math.cos(a) * rad, y + Math.sin(a) * rad); else ctx.moveTo(x + Math.cos(a) * rad, y + Math.sin(a) * rad);
-  }
-  ctx.closePath();
-}
-
-const visBox = {};
-function spriteBox(c) {
-  if (c in visBox) return visBox[c];
-  const im = sprites[c]; if (!hasSprite(c)) return null;
-  let b = null;
-  try {
-    const n = 96, cv2 = document.createElement('canvas'); cv2.width = cv2.height = n;
-    const x2 = cv2.getContext('2d'), sc = n / Math.max(im.naturalWidth, im.naturalHeight);
-    x2.drawImage(im, 0, 0, im.naturalWidth * sc, im.naturalHeight * sc);
-    const d = x2.getImageData(0, 0, n, n).data; let x0 = n, y0 = n, x1 = -1, y1 = -1;
-    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (d[(y * n + x) * 4 + 3] > 24) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
-    if (x1 >= 0) b = { x: x0 / sc, y: y0 / sc, w: (x1 + 1 - x0) / sc, h: (y1 + 1 - y0) / sc };
-    if (b) b.frac = Math.max(b.w, b.h) / Math.max(im.naturalWidth, im.naturalHeight);
-  } catch (e) { b = null; }
-  visBox[c] = b; return b;
-}
-function refFrac() {
-  let sum = 0, n = 0;
-  for (let c = 1; c <= 5; c++) { const b = spriteBox(c); if (b) { sum += b.frac; n++; } }
-  return n ? sum / n : 1;
-}
-function drawPuyo(cx, cy, color, s, flash) {
-  if (hasSprite(color)) {
-    const im = sprites[color], nw = im.naturalWidth, nh = im.naturalHeight, mul = color === OJAMA ? settings.ojScale : 1, bx = spriteBox(color);
-    if (bx) {
-      const k = s * 1.06 * refFrac() * mul / Math.max(bx.w, bx.h);
-      ctx.drawImage(im, cx - (bx.x + bx.w / 2) * k, cy - (bx.y + bx.h / 2) * k, nw * k, nh * k);
-    } else {
-      const k = s * 1.06 * mul / Math.max(nw, nh);
-      ctx.drawImage(im, cx - nw * k / 2, cy - nh * k / 2, nw * k, nh * k);
-    }
-    if (flash) { ctx.fillStyle = 'rgba(255,255,255,0.7)'; circle(cx, cy, s * 0.46); }
-    return;
-  }
-  const pal = PAL[color], r = s * 0.46;
-  const g = ctx.createRadialGradient(cx - r * 0.35, cy - r * 0.4, r * 0.1, cx, cy, r * 1.05);
-  g.addColorStop(0, pal.l); g.addColorStop(0.5, pal.m); g.addColorStop(1, pal.d);
-  ctx.fillStyle = g; circle(cx, cy, r);
-  if (color === OJAMA) {
-    ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.beginPath(); ctx.ellipse(cx - r * 0.38, cy - r * 0.45, r * 0.22, r * 0.12, -0.6, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = 'rgba(70,74,92,0.8)'; ctx.lineWidth = Math.max(1.5, s * 0.05); ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.arc(cx - s * 0.15, cy + s * 0.02, s * 0.07, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
-    ctx.beginPath(); ctx.arc(cx + s * 0.15, cy + s * 0.02, s * 0.07, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
-  } else {
-    const ex = s * 0.16, ey = cy - s * 0.03, er = s * 0.12;
-    ctx.fillStyle = '#fff'; circle(cx - ex, ey, er); circle(cx + ex, ey, er);
-    ctx.fillStyle = '#1c1c28'; circle(cx - ex + s * 0.02, ey + s * 0.025, er * 0.55); circle(cx + ex + s * 0.02, ey + s * 0.025, er * 0.55);
-    ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.ellipse(cx - r * 0.45, cy - r * 0.62, r * 0.2, r * 0.1, -0.5, 0, Math.PI * 2); ctx.fill();
-  }
-  if (flash) { ctx.fillStyle = 'rgba(255,255,255,0.78)'; circle(cx, cy, r); }
-}
-function drawPair(cx, topY, s, pair, alpha) {
-  if (!pair) return;
-  ctx.save(); ctx.globalAlpha = alpha;
-  if (pair[0] === pair[1] && !hasSprite(pair[0])) { ctx.fillStyle = PAL[pair[0]].m; ctx.fillRect(cx - s * 0.36, topY, s * 0.72, s); }
-  drawPuyo(cx, topY, pair[1], s, false);
-  drawPuyo(cx, topY + s, pair[0], s, false);
-  ctx.restore();
-}
-function drawLivePair(px, py, p, S, lockK, blink) {
-  const m = settings.rotAnim, str = m ? 1 + Math.min(0.2, Math.abs(p.angV || 0) * 0.35) : 1;
-  const sx = px + Math.sin(p.ang) * S * str, sy = py - Math.cos(p.ang) * S * str;
-  ctx.save();
-  if (m && lockK > 0) { const bot = Math.max(py, sy) + S / 2; ctx.translate(px, bot); ctx.scale(1 + 0.1 * lockK, 1 - 0.1 * lockK); ctx.translate(-px, -bot); }
-  if (m) for (const q of (p.trail || [])) {
-    ctx.globalAlpha = (1 - q.t / 7) * 0.32;
-    drawPuyo(px + Math.sin(q.a) * S, py - Math.cos(q.a) * S, p.c2, S * 0.9, false);
-  }
-  ctx.globalAlpha = 1;
-  if (p.c1 === p.c2 && !hasSprite(p.c1)) {
-    ctx.strokeStyle = PAL[p.c1].m; ctx.lineWidth = S * 0.46 * 1.56; ctx.lineCap = 'butt';
-    ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(sx, sy); ctx.stroke();
-  }
-  const pu = p.pulse || 0;
-  drawPuyo(px, py, p.c1, S * (m ? 1 + 0.07 * pu : 1), blink);
-  drawPuyo(sx, sy, p.c2, S * (m ? 1 + 0.13 * pu : 1), blink);
-  ctx.restore();
-}
-function wrapLines(str, size, maxW, bold = false) {
-  ctx.font = `${bold ? 'bold ' : ''}${size}px ${FONT}`;
-  const out = []; let cur = '';
-  for (const ch of str) { if (ctx.measureText(cur + ch).width > maxW && !'。、！？」）'.includes(ch)) { out.push(cur); cur = ch; } else cur += ch; }
-  if (cur) out.push(cur);
-  return out;
-}
-function overHint() {
-  return 'Enter / Space / パッドの+: もう一度  Backspace / パッドの−: メニューへ';
-}
-function panel(x, y, w, h) {
-  rr(x, y, w, h, 10); ctx.fillStyle = 'rgba(8,10,32,0.75)'; ctx.fill();
-  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(150,160,255,0.35)'; ctx.stroke();
-}
-function text(str, x, y, size, color, align = 'left', bold = true) {
-  ctx.font = `${bold ? 'bold ' : ''}${size}px ${FONT}`; ctx.textAlign = align; ctx.fillStyle = color; ctx.fillText(str, x, y);
-}
-
-const OJ_KINDS = [720, 360, 180, 30, 6, 1];
-function ojamaIcons(n) {
-  const out = [];
-  for (const k of OJ_KINDS) while (n >= k && out.length < 24) { out.push(k); n -= k; }
-  return out;
-}
-function drawOjamaIcon(cx, cy, kind) {
-  if (kind > 1 && hasOj(kind)) {
-    const im = ojImgs[kind], k = kind >= 180 ? 38 : 32, sc = k / Math.max(im.naturalWidth, im.naturalHeight);
-    ctx.drawImage(im, cx - im.naturalWidth * sc / 2, cy - im.naturalHeight * sc / 2, im.naturalWidth * sc, im.naturalHeight * sc);
-    return;
-  }
-  const R = kind === 1 ? 8 : kind === 6 ? 13 : kind === 30 ? 15 : 17;
-  const dark = { 1: '#8e92a6', 6: '#8e92a6', 30: '#9a7b5a', 180: '#d9b43c', 360: '#8fc4ff', 720: '#ff9a4a' }[kind];
-  const g = ctx.createRadialGradient(cx - R * 0.3, cy - R * 0.35, 1, cx, cy, R);
-  g.addColorStop(0, '#fafbff'); g.addColorStop(1, dark);
-  ctx.fillStyle = g; circle(cx, cy, R);
-  if (kind > 1) text(String(kind), cx, cy + 5, kind >= 180 ? 12 : 13, '#2a2d44', 'center');
-}
-function drawOjamaBar(p) {
-  const x = p.fx, y = 34, w = FIELD_W, h = 42;
-  panel(x, y, w, h);
-  if (p.barFlash > 0) {
-    const a = p.barFlash / 28;
-    rr(x, y, w, h, 10); ctx.fillStyle = `rgba(255,90,90,${0.35 * a})`; ctx.fill();
-    ctx.lineWidth = 3; ctx.strokeStyle = `rgba(255,140,140,${a})`; ctx.stroke();
-  }
-  if (!p.vs) { text('おじゃまなし', x + w / 2, y + 27, 14, '#7f86b8', 'center', false); return; }
-  const icons = ojamaIcons(p.pending).slice(0, 6);
-  icons.forEach((k, i) => drawOjamaIcon(x + 22 + i * 36, y + h / 2 + (p.barFlash > 0 ? Math.sin(p.barFlash) * 2 : 0), k));
-  if (p.pending > 0) {
-    ctx.font = `bold 15px ${FONT}`; ctx.textAlign = 'right'; ctx.lineJoin = 'round';
-    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(10,10,40,0.95)'; ctx.strokeText('×' + p.pending, x + w - 6, y + 38);
-    ctx.fillStyle = '#ffb0b0'; ctx.fillText('×' + p.pending, x + w - 6, y + 38);
-  }
-}
-
-function drawField(p) {
-  const fx = p.fx;
-  rr(fx - 5, FY - 5, FIELD_W + 10, FIELD_H + 10, 10); ctx.fillStyle = '#040612'; ctx.fill();
-  ctx.save();
-  if (p.glow > 0.02) { ctx.shadowColor = chainColor(p.glowN); ctx.shadowBlur = 34 * p.glow; }
-  ctx.lineWidth = 3 + 3 * p.glow; ctx.strokeStyle = p.glow > 0.02 ? chainColor(p.glowN) : p.color; ctx.stroke();
-  ctx.restore();
-
-  ctx.save();
-  ctx.beginPath(); ctx.rect(fx, FY, FIELD_W, FIELD_H); ctx.clip();
-  ctx.translate(fx, FY);
-
-  const bg = ctx.createLinearGradient(0, 0, 0, FIELD_H);
-  bg.addColorStop(0, '#1d2358'); bg.addColorStop(1, '#0b0f2c');
-  ctx.fillStyle = bg; ctx.fillRect(0, 0, FIELD_W, FIELD_H);
-  if (p.glow > 0.05) {
-    const lg = ctx.createLinearGradient(0, FIELD_H, 0, 0);
-    lg.addColorStop(0, hexA(chainColor(p.glowN), 0.38 * p.glow)); lg.addColorStop(1, hexA(chainColor(p.glowN), 0));
-    ctx.fillStyle = lg; ctx.fillRect(0, 0, FIELD_W, FIELD_H);
-  }
-  ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1; ctx.beginPath();
-  for (let c = 1; c < COLS; c++) { ctx.moveTo(c * CS, 0); ctx.lineTo(c * CS, FIELD_H); }
-  for (let r = 1; r < ROWS; r++) { ctx.moveTo(0, r * CS); ctx.lineTo(FIELD_W, r * CS); }
-  ctx.stroke();
-
-  const xc = 2 * CS + CS / 2, yc = 1 * CS + CS / 2;
-  ctx.strokeStyle = p.danger ? `rgba(255,60,60,${0.6 + 0.4 * Math.sin(game.frame * 0.4)})` : 'rgba(255,70,70,0.45)'; ctx.lineWidth = 4; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(xc - 9, yc - 9); ctx.lineTo(xc + 9, yc + 9); ctx.moveTo(xc + 9, yc - 9); ctx.lineTo(xc - 9, yc + 9); ctx.stroke();
-
-  const b = p.board, R = CS * 0.46;
-  const eMap = new Map(p.erasing.map(e => [e.y * COLS + e.x, e]));
-
-  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-    const v = b[r][c]; if (!v || v === OJAMA || hasSprite(v) || eMap.has(r * COLS + c)) continue;
-    const cx = c * CS + CS / 2, cy = r * CS + CS / 2;
-    ctx.fillStyle = PAL[v].m;
-    if (c + 1 < COLS && b[r][c + 1] === v && !eMap.has(r * COLS + c + 1)) ctx.fillRect(cx, cy - R * 0.78, CS, R * 1.56);
-    if (r + 1 < ROWS && b[r + 1][c] === v && !eMap.has((r + 1) * COLS + c)) ctx.fillRect(cx - R * 0.78, cy, R * 1.56, CS);
-  }
-  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-    const v = b[r][c]; if (!v) continue;
-    const cx = c * CS + CS / 2, cy = r * CS + CS / 2, key = r * COLS + c, e = eMap.get(key);
-    if (e) {
-      if (e.popped) continue;
-      let sc = 1, fl;
-      if (p.timer < 14) fl = Math.floor(p.timer / 2) % 2 === 0;
-      else {
-        const k = Math.min(1, (p.timer - 14) / (ERASE_BASE + e.delay - 14));
-        sc = 1 + 0.38 * k + 0.05 * Math.sin(p.timer * 1.3);
-        fl = k > 0.45 && Math.floor(p.timer / 2) % 2 === 0;
-      }
-      drawPuyo(cx, cy, v, CS * sc, fl);
-      continue;
-    }
-    const sq = p.squash.get(key);
-    if (sq) {
-      const k = sq / 9;
-      ctx.save(); ctx.translate(cx, cy + CS / 2); ctx.scale(1 + 0.18 * k, 1 - 0.18 * k);
-      drawPuyo(0, -CS / 2, v, CS, false); ctx.restore();
-    } else drawPuyo(cx, cy, v, CS, false);
-  }
-  for (const f of p.falling) drawPuyo(f.x * CS + CS / 2, f.y * CS + CS / 2, f.color, CS, false);
-
-  const pc = p.piece;
-  if (pc && p.state === 'control') {
-    if (settings.guide) {
-      const gy = p.guideY();
-      if (gy - pc.y > 0.8) {
-        const dx = OFFS[pc.rot][0], dy = OFFS[pc.rot][1];
-        ctx.lineWidth = 3; ctx.setLineDash([5, 4]);
-        for (const [x, y, col] of [[pc.x, gy, pc.c1], [pc.x + dx, gy + dy, pc.c2]]) {
-          ctx.strokeStyle = PAL[col].m; ctx.globalAlpha = 0.75;
-          ctx.beginPath(); ctx.arc(x * CS + CS / 2, y * CS + CS / 2, R * 0.82, 0, Math.PI * 2); ctx.stroke();
-        }
-        ctx.setLineDash([]); ctx.globalAlpha = 1;
-      }
-    }
-    const px = pc.vx * CS + CS / 2, py = (pc.y + (pc.visY || 0)) * CS + CS / 2;
-    const lockK = settings.rotAnim && p.isResting() ? p.lockT / LOCK : 0;
-    drawLivePair(px, py, pc, CS, lockK, lockK > 0.75 && ((game.frame >> 1) & 1) === 1);
-  }
-
-  ctx.fillStyle = 'rgba(4,6,18,0.62)'; ctx.fillRect(0, 0, FIELD_W, CS);
-  ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, CS); ctx.lineTo(FIELD_W, CS); ctx.stroke();
-
-  for (const r of p.rings) {
-    const k = r.t / r.life, e = 1 - Math.pow(1 - k, 2);
-    ctx.globalAlpha = 1 - k; ctx.strokeStyle = r.color; ctx.lineWidth = 5 * (1 - k) + 1;
-    ctx.beginPath(); ctx.arc(r.x, r.y, 10 + (r.r1 - 10) * e, 0, Math.PI * 2); ctx.stroke();
-  }
-  ctx.globalAlpha = 1;
-
-  for (const q of p.particles) {
-    const a = Math.max(0, q.life / q.max); ctx.globalAlpha = a; ctx.fillStyle = q.color;
-    if (q.k === 's') { starPath(q.x, q.y, q.r * (0.5 + 0.5 * a), q.rot); ctx.fill(); }
-    else if (q.k === 'k') { starPath(q.x, q.y, q.r * a, q.rot, 4, 0.18); ctx.fill(); }
-    else if (q.k === 'f') { ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(q.rot); ctx.fillRect(-q.r, -q.r * 0.5, q.r * 2, q.r); ctx.restore(); }
-    else circle(q.x, q.y, q.r * (0.4 + 0.6 * a));
-  }
-  ctx.globalAlpha = 1;
-  p.drawChainFx();
-
-  if (p.flashA > 0.01) { ctx.fillStyle = hexA(p.flashC, p.flashA); ctx.fillRect(0, 0, FIELD_W, FIELD_H); }
-
-  for (const pop of p.pops) {
-    const pr = pop.t / pop.life;
-    const alpha = pr > 0.72 ? (1 - pr) / 0.28 : 1;
-    const sc = 1 + 0.7 * Math.max(0, 1 - pop.t / 9);
-    const size = pop.size * sc;
-    ctx.globalAlpha = Math.max(0, alpha);
-    ctx.font = `900 ${size}px ${FONT}`; ctx.textAlign = 'center';
-    const wd = ctx.measureText(pop.text).width;
-    const jit = pop.chain >= 4 && pop.t < 14 ? (Math.random() - 0.5) * 5 : 0;
-    const x = Math.max(wd / 2 + 4, Math.min(FIELD_W - wd / 2 - 4, pop.x)) + jit, y = pop.y - pr * 28;
-    ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(4, size * 0.2); ctx.strokeStyle = 'rgba(20,10,40,0.9)';
-    ctx.strokeText(pop.text, x, y);
-    ctx.fillStyle = pop.col || (pop.chain === 0 ? '#ffffff' : chainColor(pop.chain));
-    ctx.fillText(pop.text, x, y);
-  }
-  ctx.globalAlpha = 1;
-
-  if (p.card) {
-    const c = p.card, inK = Math.min(1, c.t / 10), outK = c.t > c.life - 14 ? (c.t - (c.life - 14)) / 14 : 0;
-    const yy = 52 - (1 - inK) * 70, shown = Math.round(c.total * Math.min(1, c.t / 36));
-    ctx.save(); ctx.globalAlpha = 1 - outK;
-    rr(12, yy, FIELD_W - 24, 76, 12); ctx.fillStyle = 'rgba(8,10,40,0.88)'; ctx.fill();
-    ctx.lineWidth = 3; ctx.strokeStyle = chainColor(c.chain); ctx.stroke();
-    text(`${c.chain}連鎖!`, FIELD_W / 2, yy + 34, 30, chainColor(c.chain), 'center');
-    text('+' + shown.toLocaleString(), FIELD_W / 2, yy + 64, 26, '#ffffff', 'center');
-    ctx.restore();
-  }
-
-  if (game.countdown > 0) {
-    const ready = game.countdown > 60;
-    text(ready ? 'READY' : 'GO!', FIELD_W / 2, FIELD_H / 2 + 14, 52, ready ? '#ffffff' : '#ffe14d', 'center');
-  }
-  if (p.result) {
-    ctx.fillStyle = p.result === 'win' ? 'rgba(255,220,80,0.12)' : 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, FIELD_W, FIELD_H);
-    const batan = p.result !== 'win' && hasBatan();
-    if (batan) {
-      const bw = FIELD_W * 0.95, bh = bw * batankyuImg.naturalHeight / batankyuImg.naturalWidth, t = game.frame;
-      ctx.drawImage(batankyuImg, (FIELD_W - bw) / 2 + Math.sin(t * 0.3) * 6, FIELD_H * 0.38 + Math.sin(t * 0.06) * FIELD_H * 0.1 - bh / 2, bw, bh);
-    }
-    const msg = p.result === 'win' ? (p.winText || 'WIN!') : p.result === 'draw' ? 'DRAW' : (p.loseText || (p.vs ? 'LOSE' : 'GAME OVER'));
-    ctx.lineWidth = 8; ctx.lineJoin = 'round'; ctx.strokeStyle = 'rgba(20,10,40,0.9)';
-    let fs = p.vs ? 58 : 42; ctx.font = `900 ${fs}px ${FONT}`;
-    const mw = ctx.measureText(msg).width; if (mw > FIELD_W - 16) { fs = Math.floor(fs * (FIELD_W - 16) / mw); ctx.font = `900 ${fs}px ${FONT}`; }
-    ctx.textAlign = 'center';
-    const my = batan ? FIELD_H * 0.84 : FIELD_H / 2;
-    ctx.strokeText(msg, FIELD_W / 2, my); ctx.fillStyle = p.result === 'win' ? '#ffe14d' : '#ff7a7a'; ctx.fillText(msg, FIELD_W / 2, my);
-  }
-  ctx.restore();
-}
-
-function drawSide(p) {
-  const bx = p.fx + FIELD_W + 16, bw = 104, cxm = bx + bw / 2;
-  panel(bx, FY, bw, 196);
-  text('NEXT', cxm, FY + 22, 14, '#9fa6e0', 'center');
-  drawPair(cxm, FY + 58, 34, p.seq.get(p.seqPos), 1);
-  drawPair(cxm, FY + 140, 26, p.seq.get(p.seqPos + 1), 0.85);
-
-  const by = FY + 212;
-  panel(bx, by, bw, 176);
-  const n = p.chain > 0 ? p.chain : (p.chainShowT > 0 ? p.lastChain : 0);
-  text('連鎖', cxm, by + 24, 14, '#9fa6e0', 'center');
-  if (n > 0) {
-    const pulse = p.chain > 0 ? 1 + 0.12 * Math.sin(game.frame * 0.4) : 1;
-    ctx.save(); ctx.translate(cxm, by + 78); ctx.scale(pulse, pulse);
-    ctx.lineWidth = 6; ctx.lineJoin = 'round'; ctx.strokeStyle = 'rgba(15,10,40,0.9)';
-    ctx.font = `900 58px ${FONT}`; ctx.textAlign = 'center'; ctx.strokeText(String(n), 0, 0);
-    ctx.fillStyle = chainColor(n); ctx.fillText(String(n), 0, 0); ctx.restore();
-    if (p.lastStep) text(`${p.lastStep.cleared} × ${p.lastStep.mult}`, cxm, by + 104, 15, '#d6d9ff', 'center');
-  } else text('—', cxm, by + 78, 40, '#4a4f80', 'center');
-  text('最大連鎖', cxm, by + 134, 12, '#9fa6e0', 'center', false);
-  text(p.maxChain + ' 連鎖', cxm, by + 158, 20, '#ffffff', 'center');
-
-  const iy = by + 190;
-  panel(bx, iy, bw, 112);
-  text('消した数', cxm, iy + 22, 12, '#9fa6e0', 'center', false);
-  text(String(p.totalErased), cxm, iy + 46, 20, '#fff', 'center');
-  if (p.vs) {
-    text('送ったおじゃま', cxm, iy + 70, 12, '#9fa6e0', 'center', false);
-    text(String(p.sentTotal), cxm, iy + 94, 20, '#fff', 'center');
-  } else {
-    text('レベル', cxm, iy + 70, 12, '#9fa6e0', 'center', false);
-    text(String(p.level()), cxm, iy + 94, 20, '#fff', 'center');
-  }
-  if (p.zenkeshi) { ctx.save(); ctx.globalAlpha = 0.75 + 0.25 * Math.sin(game.frame * 0.2); text('全消し', cxm, iy + 128, 14, '#ffe14d', 'center'); text('ボーナス待機', cxm, iy + 146, 11, '#ffe14d', 'center', false); ctx.restore(); }
-}
-
-function drawScore(p) {
-  const x = p.fx, w = FIELD_W, y = FY + FIELD_H + 18;
-  panel(x - 5, y, w + 10, 64);
-  text('SCORE', x + 6, y + 22, 13, '#9fa6e0');
-  const s = String(Math.min(p.score, 99999999)), pad = s.padStart(8, '0');
-  ctx.font = `bold 34px 'Courier New',monospace`; ctx.textAlign = 'right';
-  ctx.fillStyle = '#3a3f70'; ctx.fillText(pad, x + w - 6, y + 54);
-  ctx.fillStyle = '#ffffff'; ctx.fillText(s, x + w - 6, y + 54);
-}
-
-function drawPlayer(p) {
-  ctx.save();
-  if (p.shake > 0 && settings.shake) ctx.translate((Math.random() - 0.5) * p.shake, (Math.random() - 0.5) * p.shake);
-  ctx.textBaseline = 'alphabetic';
-  text(p.label, p.fx, 26, 18, p.color);
-  if (p.showWins) text('WIN ' + game.wins[p.idx], p.fx + FIELD_W, 26, 18, p.color, 'right');
-  drawOjamaBar(p);
-  drawField(p);
-  drawSide(p);
-  drawScore(p);
-  ctx.restore();
-}
-
-function drawCutin(p) {
-  const c = p.cutin; if (!c) return;
-  const left = !p.vs || p.idx === 0;
-  const x0 = p.vs ? (p.idx === 0 ? 0 : 500) : 0, w = p.vs ? 500 : 1000;
-  const tier = c.zen ? 3 : cutTier(c.chain);
-  const bandH = tier === 0 ? 96 : 150, cy = FY + 250, top = cy - bandH / 2;
-  const inK = Math.min(1, c.t / 8), outK = c.t > c.life - 8 ? (c.t - (c.life - 8)) / 8 : 0;
-  const slide = Math.pow(1 - inK, 3) * (left ? -1 : 1) * w * 0.7;
-  const col = c.zen ? '#ffe14d' : chainColor(c.chain);
-  const px = left ? x0 + (w > 600 ? 250 : 112) : x0 + w - 112, tx = left ? x0 + (w > 600 ? 640 : 322) : x0 + w - 322;
-  ctx.save();
-  ctx.beginPath(); ctx.rect(x0, top, w, bandH); ctx.clip();
-  ctx.globalAlpha = 1 - outK;
-  const g = ctx.createLinearGradient(0, top, 0, top + bandH);
-  g.addColorStop(0, hexA(col, 0.65)); g.addColorStop(0.5, 'rgba(10,10,44,0.9)'); g.addColorStop(1, hexA(col, 0.65));
-  ctx.fillStyle = g; ctx.fillRect(x0, top, w, bandH);
-  ctx.fillStyle = 'rgba(255,255,255,0.08)';
-  for (let i = -2; i < w / 50 + 3; i++) {
-    const sx = x0 + i * 50 + ((c.t * (left ? 7 : -7)) % 50);
-    ctx.beginPath(); ctx.moveTo(sx, top + bandH); ctx.lineTo(sx + 26, top + bandH); ctx.lineTo(sx + 26 + bandH * 0.5, top); ctx.lineTo(sx + bandH * 0.5, top); ctx.closePath(); ctx.fill();
-  }
-  ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 2;
-  for (let i = 0; i < 24; i++) {
-    const a = i / 24 * Math.PI * 2 + c.t * 0.02, r0 = 56 + ((i * 37 + c.t * 15) % 90), r1 = r0 + 50 + ((i * 53) % 80);
-    ctx.beginPath(); ctx.moveTo(px + slide + Math.cos(a) * r0, cy + Math.sin(a) * r0 * 0.6); ctx.lineTo(px + slide + Math.cos(a) * r1, cy + Math.sin(a) * r1 * 0.6); ctx.stroke();
-  }
-  const pop = 1 + 0.3 * Math.max(0, 1 - c.t / 10), bounce = Math.max(0, 1 - c.t / 18) * Math.cos(c.t * 0.9);
-  ctx.save(); ctx.translate(px + slide, cy); ctx.rotate((left ? -1 : 1) * 0.14 + Math.sin(c.t * 0.5) * 0.03 * tier);
-  ctx.scale(1 + 0.3 * bounce, 1 - 0.26 * bounce);
-  drawPuyo(0, 0, c.color, (bandH * 0.9) * pop, false); ctx.restore();
-  const label = c.zen ? 'ぜんけし!!' : `${c.chain}連鎖!`, fs = (c.zen ? 50 : 46) + tier * 8;
-  const jx = c.t < 12 ? (Math.random() - 0.5) * (4 + tier * 2) : 0;
-  ctx.font = `900 ${fs}px ${FONT}`; ctx.textAlign = 'center';
-  const tw = ctx.measureText(label).width;
-  ctx.lineJoin = 'round'; ctx.lineWidth = 10; ctx.strokeStyle = 'rgba(15,5,40,0.95)';
-  const ty = cy + (tier === 0 ? 14 : 4);
-  ctx.strokeText(label, tx + slide * 0.5 + jx, ty);
-  let fill = '#ffffff';
-  if (tier >= 3) { const lg = ctx.createLinearGradient(tx - tw / 2, 0, tx + tw / 2, 0); for (let i = 0; i <= 5; i++) lg.addColorStop(i / 5, hsl2hex((game.frame * 10 + i * 60) % 360)); fill = lg; }
-  else if (tier >= 1) fill = col;
-  ctx.fillStyle = fill; ctx.fillText(label, tx + slide * 0.5 + jx, ty);
-  if (tier >= 1) text(c.zen ? 'ALL CLEAR!' : CUT_TEXT[tier], tx + slide * 0.5, cy + bandH / 2 - 16, 18, '#ffffff', 'center');
-  ctx.restore();
-  ctx.save(); ctx.globalAlpha = 1 - outK; ctx.fillStyle = col;
-  ctx.fillRect(x0, top - 3, w, 3); ctx.fillRect(x0, top + bandH, w, 3);
-  ctx.restore();
-}
-
-function drawShots() {
-  for (const s of game.shots) {
-    const col = chainColor(Math.max(2, s.from ? s.from.chain : 2));
-    for (let i = 0; i < s.trail.length; i++) {
-      const [x, y] = s.trail[i], k = (i + 1) / s.trail.length;
-      ctx.globalAlpha = k * 0.65; ctx.fillStyle = col; circle(x, y, (3 + Math.min(11, s.n * 0.6)) * k);
-    }
-    ctx.globalAlpha = 1;
-    ctx.save(); ctx.shadowColor = col; ctx.shadowBlur = 24;
-    drawPuyo(s.x, s.y, OJAMA, 26 + Math.min(22, s.n * 1.4), false);
-    ctx.restore();
-    text('+' + s.n, s.x + 20, s.y - 14, 16, '#ffffff', 'left');
-  }
-  for (const q of game.sparks) { ctx.globalAlpha = q.life / q.max; ctx.fillStyle = q.color; circle(q.x, q.y, q.r * q.life / q.max); }
-  ctx.globalAlpha = 1;
-}
-
-function drawBackground() {
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, '#1a1f55'); g.addColorStop(1, '#0a0c24');
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-  for (const b of game.bubbles) {
-    const y = ((b.y - game.frame * b.s) % (H + 40) + H + 40) % (H + 40) - 20, x = b.x + Math.sin(game.frame * 0.01 + b.ph) * 14;
-    ctx.fillStyle = 'rgba(160,180,255,0.08)'; circle(x, y, b.r);
-  }
-  for (const p of game.players) {
-    if (p.glow < 0.05) continue;
-    const cx = p.fx + FIELD_W / 2, cy = FY + FIELD_H / 2, col = chainColor(p.glowN);
-    const rg = ctx.createRadialGradient(cx, cy, 40, cx, cy, 460);
-    rg.addColorStop(0, hexA(col, 0.34 * p.glow)); rg.addColorStop(1, hexA(col, 0));
-    ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
-  }
-}
-
-function menuDetail() {
-  const m = settings.mode;
-  if (m === 'cpu') return ['CPUの強さ', `Lv.${settings.cpuLevel}  ${CPU_LV[settings.cpuLevel].name}`, false];
-  return ['色数', settings.colors + '色', false];
-}
-function drawMenu() {
-  const f = game.frame;
-  const titles = ['ぽ', 'に', 'ょ', 'ん'], cols = [1, 2, 3, 4];
-  ctx.lineJoin = 'round';
-  titles.forEach((t, i) => {
-    const x = 330 + i * 110, y = 130 + Math.sin(f * 0.05 + i) * 6;
-    ctx.font = `900 96px ${FONT}`; ctx.textAlign = 'center'; ctx.lineWidth = 12; ctx.strokeStyle = '#10143a'; ctx.strokeText(t, x, y);
-    ctx.fillStyle = PAL[cols[i]].m; ctx.fillText(t, x, y);
-  });
-  text('2P対戦パズル', 500, 178, 30, '#ffffff', 'center');
-  const pn = padInfo.length ? 'コントローラー  ' + padInfo.map((n, i) => `P${i + 1}: ${n}`).join('    ') : 'コントローラー未接続（接続してボタンを押すと認識します）';
-  text(pn, 500, 206, 14, padInfo.length ? '#8fe8a8' : '#8a91c8', 'center', false);
-
-  const det = menuDetail(), m = settings.mode;
-  const items = [
-    ['モード', MODE_NAMES[m]],
-    [det[0], det[1]],
-    ['落下スピード', ['ゆっくり', 'ふつう', 'はやい'][settings.speed]],
-    ['オプション', '回転モーション・演出・音など ▶'],
-    ['キー設定', '1P・2Pのキーを変更する ▶'],
-    ['', 'スタート (Enter / Space)'],
-  ];
-  const bx = 200, bw = 600, y0 = 240;
-  items.forEach((it, i) => {
-    const y = y0 + i * 46, sel = game.sel === i;
-    rr(bx, y, bw, 38, 10);
-    ctx.fillStyle = sel ? 'rgba(120,140,255,0.35)' : 'rgba(10,12,40,0.6)'; ctx.fill();
-    ctx.lineWidth = 2; ctx.strokeStyle = sel ? '#aab6ff' : 'rgba(150,160,255,0.25)'; ctx.stroke();
-    if (i === 5) text(it[1], bx + bw / 2, y + 27, 20, sel ? '#ffe14d' : '#fff', 'center');
-    else {
-      text(it[0], bx + 20, y + 26, 17, '#b8beee');
-      const arrow = sel && i < 3;
-      text((arrow ? '◀ ' : '') + it[1] + (arrow ? ' ▶' : ''), bx + bw - 20, y + 26, 17, '#ffffff', 'right');
-    }
-  });
-  const desc = {
-    vs: '2人で対戦。連鎖でおじゃまを送って勝利を目指そう！',
-    cpu: 'CPUと対戦。強さは5段階から選べます',
-    solo: 'ひとりでスコアアタック。連鎖をつないでハイスコアを目指そう',
-  }[m];
-  text(desc, 500, 535, 16, '#ffd9a0', 'center', false);
-  const lines = [
-    '【1P】 ' + bindText(0),
-    '【2P】 ' + bindText(1),
-    'コントローラー: 十字キー/スティック移動 / A・X・R=右回転 / B・Y・L=左回転 / +=ポーズ',
-    'P / Esc: ポーズ   M: 効果音   V: ボイス   ※ひとり用・CPU戦は1P/2Pどちらのキーでも操作可能',
-    '4つ以上つなげて消す → 連鎖で高得点 → おじゃまを送って攻撃！',
-  ];
-  lines.forEach((l, i) => text(l, 500, 575 + i * 22, 13, i === 4 ? '#ffd9a0' : '#b8beee', 'center', false));
-  for (let i = 0; i < 14; i++) {
-    const c = 1 + (i % 5), x = 50 + i * 68, y = 724 + Math.sin(f * 0.06 + i * 0.9) * 8;
-    drawPuyo(x, y, c, 40, false);
-  }
-}
-function drawOpts() {
-  text('オプション', 500, 60, 40, '#ffffff', 'center');
-  const bar = n => '■'.repeat(n) + '□'.repeat(10 - n) + '  ' + n;
-  const onoff = v => v ? 'ON' : 'OFF';
-  const rows = [
-    ['回転モーション', ['なし', 'なめらか', 'バネ (ぷるん)'][settings.rotAnim]],
-    ['連鎖演出の量', ['控えめ', 'ふつう', '派手'][settings.fx]],
-    ['画面のゆれ', onoff(settings.shake)],
-    ['コントローラー振動', onoff(settings.rumble)],
-    ['横移動の速さ', ['ゆっくり', 'ふつう', 'はやい'][settings.das]],
-    ['落下スピード制御', ['ゆっくり', 'ふつう', 'はやい'][settings.soft]],
-    ['着地ガイド', settings.guide ? 'あり' : 'なし'],
-    ['効果音', onoff(settings.sound)],
-    ['音量', bar(settings.vol)],
-    ['', 'もどる (Esc)'],
-  ];
-  const bx = 200, bw = 600, y0 = 100;
-  rows.forEach((it, i) => {
-    const y = y0 + i * 40, sel = game.optSel === i;
-    rr(bx, y, bw, 32, 9); ctx.fillStyle = sel ? 'rgba(120,140,255,0.35)' : 'rgba(10,12,40,0.6)'; ctx.fill();
-    ctx.lineWidth = 2; ctx.strokeStyle = sel ? '#aab6ff' : 'rgba(150,160,255,0.25)'; ctx.stroke();
-    if (i === OPT_N - 1) { text(it[1], bx + bw / 2, y + 23, 18, sel ? '#ffe14d' : '#fff', 'center'); return; }
-    text(it[0], bx + 20, y + 22, 16, '#b8beee');
-    const arrow = sel;
-    text((arrow ? '◀ ' : '') + it[1] + (arrow ? ' ▶' : ''), bx + bw - 20, y + 22, 16, '#ffffff', 'right');
-  });
-}
-
-function drawKeys() {
-  text('キー設定', 500, 74, 44, '#ffffff', 'center');
-  text('項目を選んで Enter → 割り当てたいキーを押す (Esc でキャンセル)', 500, 106, 15, '#b8beee', 'center', false);
-  for (let pi = 0; pi < 2; pi++) {
-    const x = pi === 0 ? 60 : 520, w = 420;
-    text(pi === 0 ? 'PLAYER 1' : 'PLAYER 2', x + w / 2, 150, 22, pi === 0 ? '#ff7f8f' : '#6fc6ff', 'center');
-    ACTS.forEach((a, i) => {
-      const idx = pi * 5 + i, y = 164 + i * 50, sel = game.keySel === idx;
-      rr(x, y, w, 40, 10); ctx.fillStyle = sel ? 'rgba(120,140,255,0.38)' : 'rgba(10,12,40,0.6)'; ctx.fill();
-      ctx.lineWidth = 2; ctx.strokeStyle = sel ? '#aab6ff' : 'rgba(150,160,255,0.25)'; ctx.stroke();
-      text(ACT_LABEL[a], x + 18, y + 27, 19, '#b8beee');
-      const waiting = sel && game.bindWait;
-      text(waiting ? 'キーを押してください…' : bindStr(pi, a), x + w - 18, y + 27, 20, waiting ? '#ffe14d' : '#ffffff', 'right');
-    });
-  }
-  const btns = ['1Pと2Pのキーを入れ替え', '初期設定に戻す', '戻る (Esc)'];
-  btns.forEach((b, i) => {
-    const idx = 10 + i, y = 440 + i * 52, sel = game.keySel === idx;
-    rr(300, y, 400, 42, 10); ctx.fillStyle = sel ? 'rgba(120,140,255,0.38)' : 'rgba(10,12,40,0.6)'; ctx.fill();
-    ctx.lineWidth = 2; ctx.strokeStyle = sel ? '#aab6ff' : 'rgba(150,160,255,0.25)'; ctx.stroke();
-    text(b, 500, y + 28, 20, sel ? '#ffe14d' : '#ffffff', 'center');
-  });
-}
-
-function drawToast() {
-  if (game.frame >= padToast.until || !padToast.text) return;
-  ctx.font = `bold 16px ${FONT}`;
-  const w = ctx.measureText(padToast.text).width + 36;
-  rr(500 - w / 2, 8, w, 32, 16); ctx.fillStyle = 'rgba(20,30,70,0.92)'; ctx.fill();
-  ctx.lineWidth = 2; ctx.strokeStyle = '#8fe8a8'; ctx.stroke();
-  text(padToast.text, 500, 30, 16, '#d8ffe6', 'center');
-}
-
-function render() {
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  drawBackground();
-  if (game.scene === 'menu') { drawMenu(); drawToast(); return; }
-  if (game.scene === 'keys') { drawKeys(); drawToast(); return; }
-  if (game.scene === 'opts') { drawOpts(); drawToast(); return; }
-
-  ctx.save();
-  if (game.shake > 0 && settings.shake) ctx.translate((Math.random() - 0.5) * game.shake * 1.4, (Math.random() - 0.5) * game.shake * 1.4);
-  game.players.forEach(drawPlayer);
-  drawShots();
-  game.players.forEach(drawCutin);
-  for (const sh of game.shock) {
-    const k = sh.t / sh.life, e = 1 - Math.pow(1 - k, 3);
-    ctx.globalAlpha = (1 - k) * 0.8; ctx.strokeStyle = sh.color; ctx.lineWidth = 14 * (1 - k) + 2;
-    ctx.beginPath(); ctx.arc(sh.x, sh.y, 30 + e * 700, 0, Math.PI * 2); ctx.stroke();
-    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 4 * (1 - k); ctx.beginPath(); ctx.arc(sh.x, sh.y, 10 + e * 640, 0, Math.PI * 2); ctx.stroke();
-  }
-  ctx.globalAlpha = 1;
-  ctx.restore();
-  if (game.flash > 0.01) { ctx.fillStyle = `rgba(255,255,255,${game.flash})`; ctx.fillRect(0, 0, W, H); }
-
-  if (game.players.length === 2) {
-    text('VS', 500, 330, 44, '#ffffff', 'center');
-    text(`${game.wins[0]} - ${game.wins[1]}`, 500, 372, 26, '#b8beee', 'center');
-  }
-  let hint = settings.mode !== 'vs'
-    ? `${bindText(0)} (1P/2P両方で操作可) P: ポーズ M: 音 V: ボイス`
-    : `1P: ${bindStr(0, 'left')}${bindStr(0, 'right')}${bindStr(0, 'down')} 2P: ${bindStr(1, 'left')}${bindStr(1, 'right')}${bindStr(1, 'down')} P: ポーズ`;
-  if (game.over) hint = overHint();
-  text(hint, 500, 764, 14, game.over ? '#ffe14d' : '#8a91c8', 'center', game.over);
-  if (game.paused) {
-    ctx.fillStyle = 'rgba(0,0,10,0.72)'; ctx.fillRect(0, 0, W, H);
-    text('PAUSE', 500, 360, 72, '#ffffff', 'center');
-    text('P / Esc / パッドの+: 再開  Backspace / パッドの−: メニューへ戻る', 500, 410, 22, '#b8beee', 'center', false);
-  }
-  drawToast();
-}
-
-let last = performance.now(), acc = 0;
-const DT = 1000 / 60;
-function frameLoop(now) {
-  acc += Math.min(100, now - last); last = now;
-  while (acc >= DT) { step(); acc -= DT; }
-  render();
-  requestAnimationFrame(frameLoop);
-}
-requestAnimationFrame(frameLoop);
-</script>
+
+    <div class="game-wrapper">
+        <canvas id="gameCanvas" width="1000" height="772"></canvas>
+    </div>
+
+    <!-- ゲームロジック実装 -->
+    <script>
+        window.onload = function() {
+            const canvas = document.getElementById('gameCanvas');
+            const ctx = canvas.getContext('2d');
+
+            // --- ゲーム定数定義 ---
+            const BOARD_COLS = 6;
+            const BOARD_ROWS = 12;
+            const BLOCK_SIZE = 40; // 内部描画基準サイズ
+            
+            // 下キーでの落下インターバル（フレーム数）。値を大きくして滑らか＆低速調整（誤爆防止）
+            const SOFT_DROP_INTERVAL = 6; // 通常落下(30~40)より速いが、制御不能にならないマイルドな速度
+
+            // 色の定義 (0: 空白, 1: 赤, 2: 青, 3: 緑, 4: 黄, 5: 紫, 9: お邪魔)
+            const COLORS = {
+                0: null,
+                1: { main: '#ef4444', light: '#fca5a5', shadow: '#991b1b', eye: '#ffffff' }, // 赤
+                2: { main: '#3b82f6', light: '#93c5fd', shadow: '#1e40af', eye: '#ffffff' }, // 青
+                3: { main: '#22c55e', light: '#86efac', shadow: '#15803d', eye: '#ffffff' }, // 緑
+                4: { main: '#eab308', light: '#fde047', shadow: '#a16207', eye: '#ffffff' }, // 黄
+                5: { main: '#a855f7', light: '#d8b4fe', shadow: '#6b21a8', eye: '#ffffff' }, // 紫
+                9: { main: '#94a3b8', light: '#cbd5e1', shadow: '#475569', eye: '#334155' }  // お邪魔ぷよ
+            };
+
+            // ゲーム状態
+            const STATE = {
+                MENU: 'MENU',
+                PLAYING: 'PLAYING',
+                GAMEOVER: 'GAMEOVER'
+            };
+
+            let currentState = STATE.MENU;
+            let gameMode = '2P'; // '2P', 'CPU', '1P'
+            
+            // キー入力検知状態
+            const keys = {};
+
+            // 音声効果 (Web Audio API で自作効果音)
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            let audioCtx = null;
+
+            function playSound(type) {
+                if (!audioCtx) return;
+                try {
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    osc.connect(gain);
+                    gain.connect(audioCtx.destination);
+
+                    const now = audioCtx.currentTime;
+                    if (type === 'move') {
+                        osc.frequency.setValueAtTime(300, now);
+                        osc.frequency.exponentialRampToValueAtTime(150, now + 0.05);
+                        gain.gain.setValueAtTime(0.1, now);
+                        gain.gain.linearRampToValueAtTime(0, now + 0.05);
+                        osc.start(now);
+                        osc.stop(now + 0.05);
+                    } else if (type === 'rotate') {
+                        osc.frequency.setValueAtTime(400, now);
+                        osc.frequency.exponentialRampToValueAtTime(600, now + 0.06);
+                        gain.gain.setValueAtTime(0.1, now);
+                        gain.gain.linearRampToValueAtTime(0, now + 0.06);
+                        osc.start(now);
+                        osc.stop(now + 0.06);
+                    } else if (type === 'pop') {
+                        osc.frequency.setValueAtTime(523.25, now); // C5
+                        osc.frequency.exponentialRampToValueAtTime(1046.5, now + 0.15); // C6
+                        gain.gain.setValueAtTime(0.2, now);
+                        gain.gain.linearRampToValueAtTime(0, now + 0.15);
+                        osc.start(now);
+                        osc.stop(now + 0.15);
+                    } else if (type === 'win') {
+                        osc.type = 'triangle';
+                        osc.frequency.setValueAtTime(440, now);
+                        osc.frequency.setValueAtTime(554.37, now + 0.1);
+                        osc.frequency.setValueAtTime(659.25, now + 0.2);
+                        osc.frequency.setValueAtTime(880, now + 0.3);
+                        gain.gain.setValueAtTime(0.2, now);
+                        gain.gain.linearRampToValueAtTime(0, now + 0.6);
+                        osc.start(now);
+                        osc.stop(now + 0.6);
+                    }
+                } catch (e) { console.error(e); }
+            }
+
+            function initAudio() {
+                if (!audioCtx) {
+                    audioCtx = new AudioCtx();
+                }
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume();
+                }
+            }
+
+            // --- プレイヤーオブジェクト構造 ---
+            class Player {
+                constructor(id, offsetX, isCPU = false) {
+                    this.id = id;
+                    this.offsetX = offsetX;
+                    this.offsetY = 120;
+                    this.isCPU = isCPU;
+                    this.reset();
+                }
+
+                reset() {
+                    this.board = Array(BOARD_ROWS).fill(null).map(() => Array(BOARD_COLS).fill(0));
+                    this.score = 0;
+                    this.chainCount = 0;
+                    this.garbageToDrop = 0; // 降る予定のお邪魔ぷよ数
+                    this.currentPair = null;
+                    this.nextPair = this.generatePair();
+                    this.spawnPair();
+                    
+                    this.dropTimer = 0;
+                    this.dropInterval = 35; // 通常落下スピード（フレーム数）
+                    this.softDropCounter = 0;
+
+                    this.isEliminating = false;
+                    this.animFrames = 0;
+                    this.poppingBlocks = [];
+                    this.winner = false;
+                    this.loser = false;
+
+                    // AI用
+                    this.cpuTimer = 0;
+                    this.cpuTargetX = 2;
+                    this.cpuTargetRot = 0;
+                }
+
+                generatePair() {
+                    const colors = [1, 2, 3, 4]; // 4色
+                    const c1 = colors[Math.floor(Math.random() * colors.length)];
+                    const c2 = colors[Math.floor(Math.random() * colors.length)];
+                    return {
+                        x: 2,
+                        y: 0,
+                        rot: 0, // 0: 上, 1: 右, 2: 下, 3: 左
+                        c1: c1, // 軸ぷよ
+                        c2: c2  // 子ぷよ
+                    };
+                }
+
+                spawnPair() {
+                    this.currentPair = this.nextPair;
+                    this.nextPair = this.generatePair();
+                    
+                    // 敗北判定（出現位置が埋まっているか）
+                    if (this.board[0][2] !== 0) {
+                        this.loser = true;
+                    }
+
+                    if (this.isCPU) {
+                        this.decideCPUMove();
+                    }
+                }
+
+                // 子ぷよの相対座標を取得
+                getOtherPos(x, y, rot) {
+                    let ox = x;
+                    let oy = y;
+                    if (rot === 0) oy -= 1;
+                    else if (rot === 1) ox += 1;
+                    else if (rot === 2) oy += 1;
+                    else if (rot === 3) ox -= 1;
+                    return { ox, oy };
+                }
+
+                // 衝突判定
+                canMove(x, y, rot) {
+                    const { ox, oy } = this.getOtherPos(x, y, rot);
+
+                    // 軸ぷよの範囲・判定
+                    if (x < 0 || x >= BOARD_COLS || y >= BOARD_ROWS) return false;
+                    if (y >= 0 && this.board[y][x] !== 0) return false;
+
+                    // 子ぷよの範囲・判定
+                    if (ox < 0 || ox >= BOARD_COLS || oy >= BOARD_ROWS) return false;
+                    if (oy >= 0 && this.board[oy][ox] !== 0) return false;
+
+                    return true;
+                }
+
+                // 移動処理
+                moveLeft() {
+                    if (this.canMove(this.currentPair.x - 1, this.currentPair.y, this.currentPair.rot)) {
+                        this.currentPair.x--;
+                        playSound('move');
+                        return true;
+                    }
+                    return false;
+                }
+
+                moveRight() {
+                    if (this.canMove(this.currentPair.x + 1, this.currentPair.y, this.currentPair.rot)) {
+                        this.currentPair.x++;
+                        playSound('move');
+                        return true;
+                    }
+                    return false;
+                }
+
+                rotate(dir) { // dir: 1 (時計回り), -1 (反時計回り)
+                    const newRot = (this.currentPair.rot + dir + 4) % 4;
+                    // 通常回転
+                    if (this.canMove(this.currentPair.x, this.currentPair.y, newRot)) {
+                        this.currentPair.rot = newRot;
+                        playSound('rotate');
+                        return;
+                    }
+                    // 壁蹴り (横に1マスずらして回転可能か試す)
+                    if (this.canMove(this.currentPair.x - 1, this.currentPair.y, newRot)) {
+                        this.currentPair.x--;
+                        this.currentPair.rot = newRot;
+                        playSound('rotate');
+                        return;
+                    }
+                    if (this.canMove(this.currentPair.x + 1, this.currentPair.y, newRot)) {
+                        this.currentPair.x++;
+                        this.currentPair.rot = newRot;
+                        playSound('rotate');
+                        return;
+                    }
+                }
+
+                // 設置・固定
+                lockPair() {
+                    const { x, y, rot, c1, c2 } = this.currentPair;
+                    const { ox, oy } = this.getOtherPos(x, y, rot);
+
+                    if (y >= 0) this.board[y][x] = c1;
+                    if (oy >= 0) this.board[oy][ox] = c2;
+
+                    this.currentPair = null;
+                    this.applyGravity();
+                    this.chainCount = 0;
+                    this.checkChain();
+                }
+
+                // 重力処理（空中に浮いているぷよを落とす）
+                applyGravity() {
+                    let moved = false;
+                    for (let col = 0; col < BOARD_COLS; col++) {
+                        for (let row = BOARD_ROWS - 2; row >= 0; row--) {
+                            if (this.board[row][col] !== 0) {
+                                let targetRow = row;
+                                while (targetRow + 1 < BOARD_ROWS && this.board[targetRow + 1][col] === 0) {
+                                    targetRow++;
+                                }
+                                if (targetRow !== row) {
+                                    this.board[targetRow][col] = this.board[row][col];
+                                    this.board[row][col] = 0;
+                                    moved = true;
+                                }
+                            }
+                        }
+                    }
+                    return moved;
+                }
+
+                // 連鎖チェックと消去
+                checkChain() {
+                    const visited = Array(BOARD_ROWS).fill(null).map(() => Array(BOARD_COLS).fill(false));
+                    let toErase = [];
+
+                    for (let r = 0; r < BOARD_ROWS; r++) {
+                        for (let c = 0; c < BOARD_COLS; c++) {
+                            const color = this.board[r][c];
+                            if (color > 0 && color !== 9 && !visited[r][c]) {
+                                const group = [];
+                                this.findConnected(r, c, color, visited, group);
+                                if (group.length >= 4) {
+                                    toErase = toErase.concat(group);
+                                }
+                            }
+                        }
+                    }
+
+                    if (toErase.length > 0) {
+                        this.chainCount++;
+                        playSound('pop');
+                        
+                        // 消去スコア計算
+                        this.score += toErase.length * 10 * Math.pow(2, this.chainCount);
+
+                        // お邪魔ぷよ発生計算 (相手へ送る)
+                        if (gameMode !== '1P') {
+                            const targetPlayer = (this.id === 1) ? player2 : player1;
+                            const garbageAmount = Math.floor(toErase.length * (this.chainCount * 0.75));
+                            targetPlayer.garbageToDrop += garbageAmount;
+                        }
+
+                        // お邪魔ぷよの巻き込み消去チェック
+                        const eraseMap = Array(BOARD_ROWS).fill(null).map(() => Array(BOARD_COLS).fill(false));
+                        toErase.forEach(p => eraseMap[p.r][p.c] = true);
+
+                        // 隣接するお邪魔ぷよも消去リストに追加
+                        toErase.forEach(p => {
+                            const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+                            dirs.forEach(([dr, dc]) => {
+                                const nr = p.r + dr;
+                                const nc = p.c + dc;
+                                if (nr >= 0 && nr < BOARD_ROWS && nc >= 0 && nc < BOARD_COLS) {
+                                    if (this.board[nr][nc] === 9) {
+                                        eraseMap[nr][nc] = true;
+                                    }
+                                }
+                            });
+                        });
+
+                        // 盤面から消去
+                        for (let r = 0; r < BOARD_ROWS; r++) {
+                            for (let c = 0; c < BOARD_COLS; c++) {
+                                if (eraseMap[r][c]) {
+                                    this.board[r][c] = 0;
+                                }
+                            }
+                        }
+
+                        // アニメーション・重力・再帰連鎖
+                        setTimeout(() => {
+                            this.applyGravity();
+                            this.checkChain();
+                        }, 250);
+
+                    } else {
+                        // 連鎖終了時にお邪魔ぷよを降らせる
+                        if (this.garbageToDrop > 0) {
+                            this.dropGarbage();
+                        }
+                        // 次のぷよ出現
+                        this.spawnPair();
+                    }
+                }
+
+                // 同色連結探索 (DFS)
+                findConnected(r, c, color, visited, group) {
+                    visited[r][c] = true;
+                    group.push({ r, c });
+
+                    const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+                    for (const [dr, dc] of dirs) {
+                        const nr = r + dr;
+                        const nc = c + dc;
+                        if (nr >= 0 && nr < BOARD_ROWS && nc >= 0 && nc < BOARD_COLS) {
+                            if (!visited[nr][nc] && this.board[nr][nc] === color) {
+                                this.findConnected(nr, nc, color, visited, group);
+                            }
+                        }
+                    }
+                }
+
+                // お邪魔ぷよを上から降らせる
+                dropGarbage() {
+                    let amount = Math.min(this.garbageToDrop, 18); // 一度に降る上限
+                    this.garbageToDrop -= amount;
+
+                    while (amount > 0) {
+                        const cols = [0, 1, 2, 3, 4, 5].sort(() => Math.random() - 0.5);
+                        for (let c of cols) {
+                            if (amount <= 0) break;
+                            for (let r = 0; r < BOARD_ROWS; r++) {
+                                if (this.board[r][c] === 0) {
+                                    this.board[r][c] = 9; // お邪魔ぷよ
+                                    amount--;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    this.applyGravity();
+                }
+
+                // 簡易CPUロジック
+                decideCPUMove() {
+                    // ランダムかつ少し賢く位置を選択
+                    this.cpuTargetX = Math.floor(Math.random() * BOARD_COLS);
+                    this.cpuTargetRot = Math.floor(Math.random() * 4);
+                }
+
+                updateCPU() {
+                    if (!this.currentPair) return;
+                    this.cpuTimer++;
+                    if (this.cpuTimer % 8 === 0) {
+                        // 回転
+                        if (this.currentPair.rot !== this.cpuTargetRot) {
+                            this.rotate(1);
+                        }
+                        // 横移動
+                        else if (this.currentPair.x < this.cpuTargetX) {
+                            this.moveRight();
+                        } else if (this.currentPair.x > this.cpuTargetX) {
+                            this.moveLeft();
+                        }
+                    }
+                }
+
+                // 毎フレーム更新
+                update() {
+                    if (this.loser || this.winner) return;
+
+                    if (this.isCPU) {
+                        this.updateCPU();
+                    }
+
+                    if (!this.currentPair) return;
+
+                    // 自動落下処理
+                    this.dropTimer++;
+                    if (this.dropTimer >= this.dropInterval) {
+                        this.dropTimer = 0;
+                        if (this.canMove(this.currentPair.x, this.currentPair.y + 1, this.currentPair.rot)) {
+                            this.currentPair.y++;
+                        } else {
+                            this.lockPair();
+                        }
+                    }
+                }
+
+                // マイルドな高速落下（誤爆防止用に調整された呼び出し関数）
+                softDrop() {
+                    if (!this.currentPair) return;
+                    this.softDropCounter++;
+                    if (this.softDropCounter >= SOFT_DROP_INTERVAL) {
+                        this.softDropCounter = 0;
+                        if (this.canMove(this.currentPair.x, this.currentPair.y + 1, this.currentPair.rot)) {
+                            this.currentPair.y++;
+                            this.score += 1; // 高速落下ボーナス
+                        } else {
+                            this.lockPair();
+                        }
+                    }
+                }
+            }
+
+            // プレイヤー1・2の作成
+            const player1 = new Player(1, 80);
+            const player2 = new Player(2, 560);
+
+            // --- キーボード操作ハンドラー ---
+            window.addEventListener('keydown', (e) => {
+                initAudio();
+                if (currentState !== STATE.PLAYING) return;
+
+                keys[e.code] = true;
+
+                // 1P 操作 (WASD + Shift/Space) または 矢印キー（1Pモード時）
+                if (gameMode === '1P') {
+                    if (e.code === 'ArrowLeft' || e.code === 'KeyA') player1.moveLeft();
+                    if (e.code === 'ArrowRight' || e.code === 'KeyD') player1.moveRight();
+                    if (e.code === 'ArrowUp' || e.code === 'KeyW' || e.code === 'Space') player1.rotate(1);
+                } else {
+                    // 2P対戦/CPU戦の1P (WASD)
+                    if (e.code === 'KeyA') player1.moveLeft();
+                    if (e.code === 'KeyD') player1.moveRight();
+                    if (e.code === 'KeyW') player1.rotate(1);
+
+                    // 2P操作 (矢印キー - ふたりで対戦時のみ)
+                    if (gameMode === '2P') {
+                        if (e.code === 'ArrowLeft') player2.moveLeft();
+                        if (e.code === 'ArrowRight') player2.moveRight();
+                        if (e.code === 'ArrowUp') player2.rotate(1);
+                    }
+                }
+            });
+
+            window.addEventListener('keyup', (e) => {
+                keys[e.code] = false;
+            });
+
+            // マウス/タッチでメニュー選択 & 画面クリック時の音声有効化
+            canvas.addEventListener('click', (e) => {
+                initAudio();
+                const rect = canvas.getBoundingClientRect();
+                const scaleX = canvas.width / rect.width;
+                const scaleY = canvas.height / rect.height;
+                const mouseX = (e.clientX - rect.left) * scaleX;
+                const mouseY = (e.clientY - rect.top) * scaleY;
+
+                if (currentState === STATE.MENU) {
+                    // モード選択ボタンのヒット判定
+                    if (mouseX >= 320 && mouseX <= 680) {
+                        if (mouseY >= 320 && mouseY <= 390) {
+                            startGame('2P');
+                        } else if (mouseY >= 410 && mouseY <= 480) {
+                            startGame('CPU');
+                        } else if (mouseY >= 500 && mouseY <= 570) {
+                            startGame('1P');
+                        }
+                    }
+                } else if (currentState === STATE.GAMEOVER) {
+                    // リトライボタン
+                    if (mouseX >= 380 && mouseX <= 620 && mouseY >= 500 && mouseY <= 570) {
+                        currentState = STATE.MENU;
+                    }
+                }
+            });
+
+            function startGame(mode) {
+                gameMode = mode;
+                player1.reset();
+                player2.reset();
+                player2.isCPU = (mode === 'CPU');
+                currentState = STATE.PLAYING;
+            }
+
+            // --- 描画関数群 ---
+
+            // ぷよ単体の描画（ぽにょぽにょ感のある丸みと目線）
+            function drawPuyo(ctx, x, y, colorId, scale = 1) {
+                if (!colorId || colorId === 0) return;
+
+                const theme = COLORS[colorId];
+                const radius = (BLOCK_SIZE / 2) * scale;
+                const cx = x + BLOCK_SIZE / 2;
+                const cy = y + BLOCK_SIZE / 2;
+
+                ctx.save();
+
+                // 本体ベース（グラデーション風円形）
+                ctx.beginPath();
+                ctx.arc(cx, cy, radius - 2, 0, Math.PI * 2);
+                ctx.fillStyle = theme.main;
+                ctx.fill();
+
+                // ハイライト（立体感）
+                ctx.beginPath();
+                ctx.arc(cx - radius * 0.3, cy - radius * 0.3, radius * 0.35, 0, Math.PI * 2);
+                ctx.fillStyle = theme.light;
+                ctx.fill();
+
+                // 目（お邪魔ぷよ以外）
+                if (colorId !== 9) {
+                    ctx.fillStyle = theme.eye;
+                    // 左目
+                    ctx.beginPath();
+                    ctx.arc(cx - radius * 0.3, cy - radius * 0.1, radius * 0.22, 0, Math.PI * 2);
+                    ctx.fill();
+                    // 右目
+                    ctx.beginPath();
+                    ctx.arc(cx + radius * 0.3, cy - radius * 0.1, radius * 0.22, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // 黒目
+                    ctx.fillStyle = '#1e293b';
+                    ctx.beginPath();
+                    ctx.arc(cx - radius * 0.25, cy - radius * 0.1, radius * 0.1, 0, Math.PI * 2);
+                    ctx.arc(cx + radius * 0.35, cy - radius * 0.1, radius * 0.1, 0, Math.PI * 2);
+                    ctx.fill();
+                } else {
+                    // お邪魔ぷよの目（×目）
+                    ctx.strokeStyle = theme.eye;
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.moveTo(cx - 8, cy - 8); ctx.lineTo(cx + 8, cy + 8);
+                    ctx.moveTo(cx + 8, cy - 8); ctx.lineTo(cx - 8, cy + 8);
+                    ctx.stroke();
+                }
+
+                ctx.restore();
+            }
+
+            // プレイヤーフィールドの描画
+            function drawBoard(player) {
+                const { offsetX, offsetY, board, currentPair, nextPair, score, garbageToDrop, id } = player;
+
+                // 枠外背景・フィールド枠
+                ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+                ctx.roundRect(offsetX - 10, offsetY - 10, BOARD_COLS * BLOCK_SIZE + 20, BOARD_ROWS * BLOCK_SIZE + 20, 12);
+                ctx.fill();
+                ctx.strokeStyle = '#334155';
+                ctx.lineWidth = 4;
+                ctx.stroke();
+
+                // 盤面格子描画
+                for (let r = 0; r < BOARD_ROWS; r++) {
+                    for (let c = 0; c < BOARD_COLS; c++) {
+                        ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+                        ctx.strokeRect(offsetX + c * BLOCK_SIZE, offsetY + r * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+                        
+                        // 設置されたぷよ
+                        if (board[r][c] !== 0) {
+                            drawPuyo(ctx, offsetX + c * BLOCK_SIZE, offsetY + r * BLOCK_SIZE, board[r][c]);
+                        }
+                    }
+                }
+
+                // 操作中のぷよペアの描画
+                if (currentPair) {
+                    const { x, y, rot, c1, c2 } = currentPair;
+                    const { ox, oy } = player.getOtherPos(x, y, rot);
+
+                    if (y >= 0) drawPuyo(ctx, offsetX + x * BLOCK_SIZE, offsetY + y * BLOCK_SIZE, c1);
+                    if (oy >= 0) drawPuyo(ctx, offsetX + ox * BLOCK_SIZE, offsetY + oy * BLOCK_SIZE, c2);
+                }
+
+                // NEXT枠
+                const nextBoxX = (id === 1) ? offsetX + BOARD_COLS * BLOCK_SIZE + 20 : offsetX - 90;
+                const nextBoxY = offsetY + 10;
+                ctx.fillStyle = 'rgba(30, 41, 59, 0.9)';
+                ctx.roundRect(nextBoxX, nextBoxY, 70, 110, 10);
+                ctx.fill();
+                ctx.strokeStyle = '#475569';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                ctx.fillStyle = '#94a3b8';
+                ctx.font = 'bold 12px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('NEXT', nextBoxX + 35, nextBoxY + 20);
+
+                if (nextPair) {
+                    drawPuyo(ctx, nextBoxX + 15, nextBoxY + 30, nextPair.c2, 0.8);
+                    drawPuyo(ctx, nextBoxX + 15, nextBoxY + 65, nextPair.c1, 0.8);
+                }
+
+                // スコア & プレイヤーラベル
+                ctx.fillStyle = '#f8fafc';
+                ctx.font = 'bold 20px sans-serif';
+                ctx.textAlign = 'left';
+                const label = (id === 1) ? '1P' : (gameMode === 'CPU' ? 'CPU' : '2P');
+                ctx.fillText(`${label}`, offsetX, offsetY - 25);
+
+                ctx.textAlign = 'right';
+                ctx.fillText(`${score} pts`, offsetX + BOARD_COLS * BLOCK_SIZE, offsetY - 25);
+
+                // 予告お邪魔ぷよ表示
+                if (garbageToDrop > 0) {
+                    ctx.fillStyle = '#ef4444';
+                    ctx.font = 'bold 14px sans-serif';
+                    ctx.textAlign = 'left';
+                    ctx.fillText(`予告お邪魔: ${garbageToDrop}`, offsetX, offsetY + BOARD_ROWS * BLOCK_SIZE + 25);
+                }
+            }
+
+            // メニュー画面の描画
+            function drawMenu() {
+                ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                // タイトルロゴ
+                ctx.fillStyle = '#38bdf8';
+                ctx.font = 'black 54px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.shadowColor = '#0284c7';
+                ctx.shadowBlur = 20;
+                ctx.fillText('ぽにょんぽにょん', canvas.width / 2, 180);
+                ctx.shadowBlur = 0;
+
+                ctx.fillStyle = '#cbd5e1';
+                ctx.font = 'bold 24px sans-serif';
+                ctx.fillText('2P対戦版', canvas.width / 2, 230);
+
+                // ボタン描画ヘルパー
+                function drawButton(y, text, colorBg, colorHover) {
+                    ctx.fillStyle = colorBg;
+                    ctx.roundRect(320, y, 360, 70, 16);
+                    ctx.fill();
+                    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+
+                    ctx.fillStyle = '#ffffff';
+                    ctx.font = 'bold 22px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(text, canvas.width / 2, y + 43);
+                }
+
+                drawButton(320, 'ふたりで対戦 (2P)', '#2563eb');
+                drawButton(410, 'CPUと対戦 (1P vs CPU)', '#0d9488');
+                drawButton(500, 'ひとりでスコアアタック', '#4f46e5');
+
+                ctx.fillStyle = '#94a3b8';
+                ctx.font = '14px sans-serif';
+                ctx.fillText('画面クリックまたはタップで選択してください', canvas.width / 2, 630);
+                ctx.fillText('【操作】 1P: A/D(移動) W(回転) S(落下) | 2P: 矢印キー', canvas.width / 2, 660);
+            }
+
+            // 勝敗・ゲームオーバー画面描画
+            function drawGameOver() {
+                ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 48px sans-serif';
+                ctx.textAlign = 'center';
+
+                let winnerText = '';
+                if (gameMode === '1P') {
+                    winnerText = 'ゲームオーバー！';
+                } else if (player1.loser && player2.loser) {
+                    winnerText = '引き分け！';
+                } else if (player1.loser) {
+                    winnerText = (gameMode === 'CPU' ? 'CPU' : '2P') + ' の勝利！';
+                } else if (player2.loser) {
+                    winnerText = '1P の勝利！';
+                }
+
+                ctx.fillText(winnerText, canvas.width / 2, 320);
+
+                // リトライボタン
+                ctx.fillStyle = '#22c55e';
+                ctx.roundRect(380, 500, 240, 70, 16);
+                ctx.fill();
+
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 22px sans-serif';
+                ctx.fillText('メニューへ戻る', canvas.width / 2, 543);
+            }
+
+            // --- メインゲームループ ---
+            function gameLoop() {
+                // 画面クリア
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // 背景デザイン（グラデーション）
+                const bgGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+                bgGrad.addColorStop(0, '#0f172a');
+                bgGrad.addColorStop(1, '#1e1b4b');
+                ctx.fillStyle = bgGrad;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                if (currentState === STATE.MENU) {
+                    drawMenu();
+                } else if (currentState === STATE.PLAYING || currentState === STATE.GAMEOVER) {
+                    
+                    // 下キー長押しでのマイルド落下（ソフトドロップ）
+                    if (currentState === STATE.PLAYING) {
+                        if (keys['KeyS']) player1.softDrop();
+                        if (gameMode === '1P' && keys['ArrowDown']) player1.softDrop();
+                        if (gameMode === '2P' && keys['ArrowDown']) player2.softDrop();
+
+                        player1.update();
+                        if (gameMode !== '1P') {
+                            player2.update();
+                        }
+
+                        // 勝敗判定
+                        if (player1.loser || player2.loser) {
+                            currentState = STATE.GAMEOVER;
+                            if (player1.loser && !player2.loser) playSound('win');
+                            else if (player2.loser && !player1.loser) playSound('win');
+                        }
+                    }
+
+                    // 描画
+                    if (gameMode === '1P') {
+                        // 1Pのみ中央配置
+                        player1.offsetX = 380;
+                        drawBoard(player1);
+                    } else {
+                        player1.offsetX = 100;
+                        player2.offsetX = 560;
+                        drawBoard(player1);
+                        drawBoard(player2);
+                    }
+
+                    if (currentState === STATE.GAMEOVER) {
+                        drawGameOver();
+                    }
+                }
+
+                requestAnimationFrame(gameLoop);
+            }
+
+            // ループ開始
+            requestAnimationFrame(gameLoop);
+        };
+    </script>
 </body>
 </html>
